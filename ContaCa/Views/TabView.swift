@@ -7,12 +7,25 @@
 
 import SwiftUI
 
-struct TabView: View {
+struct ContentView: View {
     var body: some View {
-        Text(/*@START_MENU_TOKEN@*/"Hello, World!"/*@END_MENU_TOKEN@*/)
+        TabView {
+            Tab("Início", systemImage: "house.fill") {
+                HomeView()
+            }
+            
+            Tab("Atividade", systemImage: "figure.walk") {
+                Text("Atividade")
+            }
+            
+            Tab("Perfil", systemImage: "person.fill") {
+                ProfileView()
+            }
+        }
+        .tint(Color("AccentColor"))
     }
 }
 
 #Preview {
-    TabView()
+    ContentView()
 }
