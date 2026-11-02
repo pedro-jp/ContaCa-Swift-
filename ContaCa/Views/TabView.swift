@@ -6,19 +6,30 @@
 //
 
 import SwiftUI
+import SwiftData
 
-struct ContentView: View {
+struct MainView: View {
+    @ObservedObject private var router = AppNavigationRouter.shared
+    
     var body: some View {
-        TabView {
-            Tab("Início", systemImage: "house.fill") {
+        TabView(selection: $router.selectedTab) {
+            Tab("Início", systemImage: "house.fill", value: "inicio") {
                 HomeView()
             }
             
-            Tab("Atividade", systemImage: "figure.walk") {
-                Text("Atividade")
+            Tab("Alimentação", systemImage: "fork.knife", value: "alimentacao") {
+                NutritionView()
             }
             
-            Tab("Perfil", systemImage: "person.fill") {
+            Tab("Treinos", systemImage: "dumbbell.fill", value: "treinos") {
+                WorkoutsView()
+            }
+            
+            Tab("Evolução", systemImage: "chart.line.uptrend.xyaxis", value: "evolucao") {
+                EvolutionView()
+            }
+            
+            Tab("Perfil", systemImage: "person.fill", value: "perfil") {
                 ProfileView()
             }
         }
@@ -27,5 +38,6 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    MainView()
+        .modelContainer(PreviewContainer.shared)
 }
