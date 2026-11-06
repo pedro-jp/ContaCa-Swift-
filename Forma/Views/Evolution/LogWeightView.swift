@@ -18,6 +18,8 @@ struct LogWeightView: View {
     @FocusState private var isWeightFieldFocused: Bool
     @State private var date: Date = Date()
     @State private var notes: String = ""
+    @State private var isSaving: Bool = false
+    @State private var saveErrorMessage: String? = nil
 
     private var previewMetrics: ContextualGoalMetrics {
         let ctx = FormaDataStore.shared.buildRecalculationContext(in: modelContext)
@@ -120,28 +122,46 @@ struct LogWeightView: View {
                     Button("Cancelar") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Salvar") {
+                    Button(isSaving ? "Salvando..." : "Salvar") {
+                        guard !isSaving else { return }
                         if let parsed = ProfileInputValidator.parseFlexibleWeight(weightText) {
                             weight = parsed
                         }
+                        let finalWeight = weight
+                        let finalDate = date
+                        let finalNotes = notes
+                        isSaving = true
+                        saveErrorMessage = nil
 
-                        let entry = WeightEntry(weight: weight, date: date, notes: notes)
-                        modelContext.insert(entry)
-                        AppActivityLogManager.shared.logWeight(id: entry.id.uuidString, weightKg: weight, date: date, notes: notes)
-
-                        let profile = FormaDataStore.shared.ensureSingleProfile(in: modelContext)
-                        profile.currentWeight = weight
-                        profile.autoRecalculateGoals = true
-                        FormaDataStore.shared.recalculateProfileWithFullContext(for: weight, profile: profile, in: modelContext)
-                        try? modelContext.save()
-                        FormaDataStore.shared.syncTodayData()
                         Task { @MainActor in
-                            await BackendSyncManager.shared.sync(context: modelContext)
+                            do {
+                                try await FormaDataStore.shared.createWeightEntryRemoteFirst(
+                                    weight: finalWeight,
+                                    date: finalDate,
+                                    notes: finalNotes
+                                )
+                                isSaving = false
+                                dismiss()
+                            } catch {
+                                isSaving = false
+                                saveErrorMessage = FormaAPIClient.humanizeErrorMessage(error.localizedDescription)
+                            }
                         }
-                        dismiss()
                     }
                     .fontWeight(.bold)
+                    .disabled(isSaving)
                 }
+            }
+            .alert(
+                "Erro ao Sincronizar Pesagem",
+                isPresented: Binding(
+                    get: { saveErrorMessage != nil },
+                    set: { if !$0 { saveErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                Text(saveErrorMessage ?? "")
             }
         }
     }

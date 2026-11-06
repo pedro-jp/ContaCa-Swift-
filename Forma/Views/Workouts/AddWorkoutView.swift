@@ -17,6 +17,8 @@ struct AddWorkoutView: View {
     @State private var durationMinutes: Double = 50.0
     @State private var caloriesBurned: Double = 350.0
     @State private var notes: String = ""
+    @State private var isSaving: Bool = false
+    @State private var saveErrorMessage: String? = nil
     
     private var defaultCaloriesForType: Double {
         switch selectedType {
@@ -97,7 +99,8 @@ struct AddWorkoutView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Salvar") {
+                    Button(isSaving ? "Salvando..." : "Salvar") {
+                        guard !isSaving else { return }
                         let finalTitle = title.trimmingCharacters(in: .whitespaces).isEmpty ? selectedType.rawValue : title
                         let workout = WorkoutEntry(
                             title: finalTitle,
@@ -107,10 +110,32 @@ struct AddWorkoutView: View {
                             date: Date(),
                             notes: notes
                         )
-                        try? FormaDataStore.shared.insertWorkoutEntry(workout)
-                        dismiss()
+                        isSaving = true
+                        saveErrorMessage = nil
+                        Task { @MainActor in
+                            do {
+                                try await FormaDataStore.shared.insertWorkoutEntryRemoteFirst(workout)
+                                isSaving = false
+                                dismiss()
+                            } catch {
+                                isSaving = false
+                                saveErrorMessage = FormaAPIClient.humanizeErrorMessage(error.localizedDescription)
+                            }
+                        }
                     }
+                    .disabled(isSaving)
                 }
+            }
+            .alert(
+                "Erro ao Sincronizar Treino",
+                isPresented: Binding(
+                    get: { saveErrorMessage != nil },
+                    set: { if !$0 { saveErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                Text(saveErrorMessage ?? "")
             }
         }
     }

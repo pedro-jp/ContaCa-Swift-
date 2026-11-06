@@ -156,6 +156,16 @@ public final class AuthManager: ObservableObject {
             self.currentUserEmail = KeychainHelper.shared.loadString(key: userEmailKey) ?? UserDefaults.standard.string(forKey: userEmailKey)
             self.currentUserName = KeychainHelper.shared.loadString(key: userNameKey) ?? UserDefaults.standard.string(forKey: userNameKey)
             self.currentAuthProvider = KeychainHelper.shared.loadString(key: authProviderKey) ?? UserDefaults.standard.string(forKey: authProviderKey)
+
+            let activeLocalId = UserDefaults.standard.string(forKey: BackendSyncManager.activeLocalUserIdKey)
+            if activeLocalId != userId {
+                BackendSyncManager.shared.markRequiresInitialPull(true)
+                BackendSyncManager.shared.hasCompletedInitialSessionPull = false
+            } else if let localProfile = try? FormaDataStore.shared.mainContext.fetch(FetchDescriptor<Profile>()).first,
+                      localProfile.onboardingCompleted {
+                BackendSyncManager.shared.hasCompletedInitialSessionPull = true
+            }
+
             self.isAuthenticated = true
             self.isGuest = false
         } else {
@@ -187,10 +197,10 @@ public final class AuthManager: ObservableObject {
             method: "POST",
             jsonBody: ["email": cleanEmail, "password": cleanPassword],
             authenticated: false,
-            timeout: 8.0,
+            timeout: 12.0,
             interceptAccountStatus: false
         )
-        try handleAuthSuccess(data: data, defaultProvider: "EMAIL")
+        try await handleAuthSuccess(data: data, defaultProvider: "EMAIL", isNewRegistration: false)
     }
 
     // MARK: - Cadastro com E-mail e Senha
@@ -215,10 +225,10 @@ public final class AuthManager: ObservableObject {
             method: "POST",
             jsonBody: ["name": cleanName, "email": cleanEmail, "password": cleanPassword],
             authenticated: false,
-            timeout: 8.0,
+            timeout: 12.0,
             interceptAccountStatus: false
         )
-        try handleAuthSuccess(data: data, defaultProvider: "EMAIL")
+        try await handleAuthSuccess(data: data, defaultProvider: "EMAIL", isNewRegistration: true)
     }
 
     // MARK: - Login Social Seguro (Google ou Apple ID)
@@ -252,10 +262,10 @@ public final class AuthManager: ObservableObject {
             method: "POST",
             jsonBody: body,
             authenticated: false,
-            timeout: 10.0,
+            timeout: 14.0,
             interceptAccountStatus: false
         )
-        try handleAuthSuccess(data: data, defaultProvider: provider.uppercased())
+        try await handleAuthSuccess(data: data, defaultProvider: provider.uppercased(), isNewRegistration: false)
     }
 
     // MARK: - Recuperação, Alteração de Senha e Exclusão de Conta
@@ -310,10 +320,10 @@ public final class AuthManager: ObservableObject {
                 "newPassword": cleanPassword
             ],
             authenticated: false,
-            timeout: 10.0,
+            timeout: 12.0,
             interceptAccountStatus: false
         )
-        try handleAuthSuccess(data: data, defaultProvider: "EMAIL")
+        try await handleAuthSuccess(data: data, defaultProvider: "EMAIL", isNewRegistration: false)
     }
 
     public func changePassword(currentPassword: String, newPassword: String) async throws {
@@ -374,55 +384,62 @@ public final class AuthManager: ObservableObject {
         UserDefaults.standard.removeObject(forKey: "forma_last_sync_timestamp")
 
         BackendSyncManager.shared.cancelPendingSyncs()
+        BackendSyncManager.shared.clearAllPendingDeletions()
         BackendSyncManager.shared.markRequiresInitialPull(false)
+        BackendSyncManager.shared.hasCompletedInitialSessionPull = false
         FormaDataStore.shared.resetLocalDataForUserSwitch(userName: nil, userEmail: nil)
     }
 
-    // MARK: - Sucesso de Autenticação & Gravação Segura
-    private func handleAuthSuccess(data: Data, defaultProvider: String) throws {
+    public func updateLocalUserName(_ newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        self.currentUserName = trimmed
+        KeychainHelper.shared.save(key: userNameKey, string: trimmed)
+        UserDefaults.standard.set(trimmed, forKey: userNameKey)
+    }
+
+    // MARK: - Sucesso de Autenticação & Isolamento Total Multi-Usuário
+    private func handleAuthSuccess(data: Data, defaultProvider: String, isNewRegistration: Bool) async throws {
+        struct AuthProfileDTO: Decodable {
+            let goal: String?
+            let targetCalorieIntake: Double?
+            let targetCalorieBurn: Double?
+            let targetSteps: Double?
+            let targetWeight: Double?
+            let targetProtein: Double?
+            let targetCarbohydrates: Double?
+            let targetFat: Double?
+            let targetWaterMilliliters: Int?
+            let heightMeters: Double?
+            let currentWeight: Double?
+            let onboardingCompleted: Bool?
+        }
+
         struct AuthResponseModel: Decodable {
             let token: String
             let userId: String
             let email: String?
             let name: String?
             let authProvider: String?
+            let profile: AuthProfileDTO?
         }
 
         let result = try JSONDecoder().decode(AuthResponseModel.self, from: data)
-        let previousLocalUserId = UserDefaults.standard.string(forKey: BackendSyncManager.activeLocalUserIdKey)
-        let localProfile = try? FormaDataStore.shared.mainContext.fetch(FetchDescriptor<Profile>()).first
-        let localEmail = localProfile?.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        let incomingEmail = result.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        let isSameOrUnclaimedLocalOwner = localEmail.isEmpty || (!incomingEmail.isEmpty && localEmail == incomingEmail)
 
         BackendSyncManager.shared.cancelPendingSyncs()
+        BackendSyncManager.shared.clearAllPendingDeletions()
+        BackendSyncManager.shared.hasCompletedInitialSessionPull = false
 
-        if let previousLocalUserId, previousLocalUserId != result.userId, !isSameOrUnclaimedLocalOwner {
-            FormaDataStore.shared.resetLocalDataForUserSwitch(userName: result.name, userEmail: result.email)
-            BackendSyncManager.shared.markRequiresInitialPull(true)
-        } else {
-            if let profile = localProfile {
-                if let name = result.name, !name.isEmpty, (profile.nome.isEmpty || profile.nome == "Usuário") {
-                    profile.nome = name
-                }
-                if let email = result.email, !email.isEmpty {
-                    profile.email = email
-                }
-                try? FormaDataStore.shared.mainContext.save()
-            }
-            BackendSyncManager.shared.markRequiresInitialPull(false)
-        }
+        // 1. Sempre limpa 100% do cache SwiftData local antes de iniciar a sessão da conta autenticada
+        FormaDataStore.shared.resetLocalDataForUserSwitch(userName: result.name, userEmail: result.email)
         UserDefaults.standard.set(result.userId, forKey: BackendSyncManager.activeLocalUserIdKey)
 
+        // 2. Grava credenciais em memória e no Keychain antes do pull inicial
         self.jwtToken = result.token
         self.currentUserId = result.userId
         self.currentUserEmail = result.email
         self.currentUserName = result.name
         self.currentAuthProvider = result.authProvider ?? defaultProvider
-        withAnimation(.easeInOut(duration: 0.25)) {
-            self.isGuest = false
-            self.isAuthenticated = true
-        }
 
         KeychainHelper.shared.save(key: tokenKey, string: result.token)
         KeychainHelper.shared.save(key: userIdKey, string: result.userId)
@@ -441,5 +458,51 @@ public final class AuthManager: ObservableObject {
         UserDefaults.standard.set(result.name, forKey: userNameKey)
         UserDefaults.standard.set(self.currentAuthProvider, forKey: authProviderKey)
         UserDefaults.standard.removeObject(forKey: "forma_is_guest")
+
+        // 3. Aplica dados imediatos do perfil retornados pelo servidor
+        let localProfile = FormaDataStore.shared.ensureSingleProfile(in: FormaDataStore.shared.mainContext)
+        if let name = result.name, !name.isEmpty {
+            localProfile.nome = name
+        }
+        if let email = result.email, !email.isEmpty {
+            localProfile.email = email
+        }
+        if let p = result.profile {
+            if let g = p.goal { localProfile.goalRaw = g }
+            if let ci = p.targetCalorieIntake { localProfile.targetCalorieIntake = ci }
+            if let cb = p.targetCalorieBurn { localProfile.targetCalorieBurn = cb }
+            if let ts = p.targetSteps { localProfile.targetSteps = ts }
+            if let tw = p.targetWeight { localProfile.targetWeight = tw }
+            if let tp = p.targetProtein { localProfile.targetProtein = tp }
+            if let tc = p.targetCarbohydrates { localProfile.targetCarbohydrates = tc }
+            if let tf = p.targetFat { localProfile.targetFat = tf }
+            if let twm = p.targetWaterMilliliters { localProfile.targetWaterMilliliters = twm }
+            if let hm = p.heightMeters { localProfile.height = hm }
+            if let cw = p.currentWeight { localProfile.currentWeight = cw }
+            localProfile.onboardingCompleted = isNewRegistration ? false : (p.onboardingCompleted ?? false)
+        } else {
+            localProfile.onboardingCompleted = false
+        }
+        try? FormaDataStore.shared.mainContext.save()
+
+        // 4. Para contas novas (ou sem onboarding concluído), bloqueia importação retroativa do Apple Saúde do iPhone
+        if isNewRegistration || !localProfile.onboardingCompleted {
+            FormaDataStore.setHealthKitImportCutoff(Date(), forUserId: result.userId)
+        }
+
+        // 5. Em login de conta existente, baixa os dados do Supabase uma única vez para o cache local antes de abrir a tela
+        if isNewRegistration {
+            BackendSyncManager.shared.markRequiresInitialPull(false)
+            BackendSyncManager.shared.hasCompletedInitialSessionPull = true
+        } else {
+            try? await BackendSyncManager.shared.pullInitialStateForAuthenticatedUser(
+                context: FormaDataStore.shared.mainContext
+            )
+        }
+
+        withAnimation(.easeInOut(duration: 0.25)) {
+            self.isGuest = false
+            self.isAuthenticated = true
+        }
     }
 }

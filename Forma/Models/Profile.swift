@@ -79,8 +79,8 @@ public struct ContextualGoalMetrics: Sendable {
 
 @Model
 final class Profile {
-    var nome: String = "João Pedro"
-    var email: String = "joao@email.com"
+    var nome: String = ""
+    var email: String = ""
     var goalRaw: String = "Ganhar peso"
     var preferredFocusRaw: String? = nil
     var targetCalorieIntake: Double = 2800.0 // Meta de ingestão diária (consumir)
@@ -94,6 +94,20 @@ final class Profile {
     var targetCarbohydrates: Double = 380.0
     var targetWaterMilliliters: Int = 2500
     var autoRecalculateGoals: Bool = true
+    var onboardingCompleted: Bool = false
+
+    /// Indica se o usuário precisa preencher obrigatoriamente o modal de configuração inicial antes de usar o app
+    var requiresInitialSetup: Bool {
+        !onboardingCompleted
+            || currentWeight < 30.0
+            || height < 1.0
+            || targetWeight < 30.0
+            || targetCalorieIntake < 1000.0
+            || targetProtein <= 0.0
+            || targetCarbohydrates <= 0.0
+            || targetFat <= 0.0
+            || targetWaterMilliliters < 500
+    }
     
     /// Taxa Metabólica Basal (TMB - Mifflin-St Jeor)
     var tmb: Double {
@@ -135,8 +149,8 @@ final class Profile {
     }
     
     init(
-        nome: String = "João Pedro",
-        email: String = "joao@email.com",
+        nome: String = "",
+        email: String = "",
         goal: FitnessGoal = .gain,
         preferredFocus: FocusMetric? = nil,
         targetCalorieIntake: Double = 2800.0,
@@ -145,7 +159,8 @@ final class Profile {
         currentWeight: Double = 72.0,
         targetWeight: Double = 80.0,
         height: Double = 1.78,
-        macros: Macros = Macros(protein: 160.0, fat: 70.0, carbohydrates: 380.0)
+        macros: Macros = Macros(protein: 160.0, fat: 70.0, carbohydrates: 380.0),
+        onboardingCompleted: Bool = false
     ) {
         self.nome = nome
         self.email = email
@@ -160,6 +175,7 @@ final class Profile {
         self.targetProtein = macros.protein
         self.targetFat = macros.fat
         self.targetCarbohydrates = macros.carbohydrates
+        self.onboardingCompleted = onboardingCompleted
     }
     
     func atualizarNome(_ novoNome: String) {

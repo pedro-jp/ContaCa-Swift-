@@ -320,7 +320,67 @@ public struct AIRecommendedRoutine: Codable, Sendable {
     }
 }
 
+public struct InitialGoalsAISuggestion: Codable, Sendable, Equatable {
+    public var suggestedTargetWeight: Double
+    public var dailyCalories: Double
+    public var proteinGrams: Double
+    public var carbsGrams: Double
+    public var fatGrams: Double
+    public var waterMilliliters: Int
+    public var targetCalorieBurn: Double
+    public var targetSteps: Double
+    public var explanation: String
+
+    enum CodingKeys: String, CodingKey {
+        case suggestedTargetWeight = "suggested_target_weight"
+        case dailyCalories = "daily_calories"
+        case proteinGrams = "protein_grams"
+        case carbsGrams = "carbs_grams"
+        case fatGrams = "fat_grams"
+        case waterMilliliters = "water_milliliters"
+        case targetCalorieBurn = "target_calorie_burn"
+        case targetSteps = "target_steps"
+        case explanation
+    }
+
+    public init(
+        suggestedTargetWeight: Double,
+        dailyCalories: Double,
+        proteinGrams: Double,
+        carbsGrams: Double,
+        fatGrams: Double,
+        waterMilliliters: Int,
+        targetCalorieBurn: Double,
+        targetSteps: Double,
+        explanation: String
+    ) {
+        self.suggestedTargetWeight = suggestedTargetWeight
+        self.dailyCalories = dailyCalories
+        self.proteinGrams = proteinGrams
+        self.carbsGrams = carbsGrams
+        self.fatGrams = fatGrams
+        self.waterMilliliters = waterMilliliters
+        self.targetCalorieBurn = targetCalorieBurn
+        self.targetSteps = targetSteps
+        self.explanation = explanation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.suggestedTargetWeight = (try? container.decodeIfPresent(Double.self, forKey: .suggestedTargetWeight)) ?? 75.0
+        self.dailyCalories = (try? container.decodeIfPresent(Double.self, forKey: .dailyCalories)) ?? 2400.0
+        self.proteinGrams = (try? container.decodeIfPresent(Double.self, forKey: .proteinGrams)) ?? 150.0
+        self.carbsGrams = (try? container.decodeIfPresent(Double.self, forKey: .carbsGrams)) ?? 280.0
+        self.fatGrams = (try? container.decodeIfPresent(Double.self, forKey: .fatGrams)) ?? 70.0
+        self.waterMilliliters = (try? container.decodeIfPresent(Int.self, forKey: .waterMilliliters)) ?? 2600
+        self.targetCalorieBurn = (try? container.decodeIfPresent(Double.self, forKey: .targetCalorieBurn)) ?? 500.0
+        self.targetSteps = (try? container.decodeIfPresent(Double.self, forKey: .targetSteps)) ?? 8500.0
+        self.explanation = (try? container.decodeIfPresent(String.self, forKey: .explanation)) ?? ""
+    }
+}
+
 public struct EvolutionAIAnalysis: Codable, Sendable {
+    public var id: UUID
     public var statusSummary: String
     public var calorieDiagnostic: String
     public var macroDiagnostic: String
@@ -333,6 +393,7 @@ public struct EvolutionAIAnalysis: Codable, Sendable {
     public var generatedAt: Date
     
     enum CodingKeys: String, CodingKey {
+        case id
         case statusSummary = "status_summary"
         case calorieDiagnostic = "calorie_diagnostic"
         case macroDiagnostic = "macro_diagnostic"
@@ -346,6 +407,7 @@ public struct EvolutionAIAnalysis: Codable, Sendable {
     }
     
     public init(
+        id: UUID = UUID(),
         statusSummary: String,
         calorieDiagnostic: String,
         macroDiagnostic: String,
@@ -357,6 +419,7 @@ public struct EvolutionAIAnalysis: Codable, Sendable {
         recommendedRoutine: AIRecommendedRoutine? = nil,
         generatedAt: Date = Date()
     ) {
+        self.id = id
         self.statusSummary = statusSummary
         self.calorieDiagnostic = calorieDiagnostic
         self.macroDiagnostic = macroDiagnostic
@@ -371,6 +434,7 @@ public struct EvolutionAIAnalysis: Codable, Sendable {
     
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? container.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
         self.statusSummary = (try? container.decodeIfPresent(String.self, forKey: .statusSummary)) ?? "Diagnóstico Concluído"
         self.calorieDiagnostic = (try? container.decodeIfPresent(String.self, forKey: .calorieDiagnostic)) ?? "Balanço calórico avaliado com sucesso."
         self.macroDiagnostic = (try? container.decodeIfPresent(String.self, forKey: .macroDiagnostic)) ?? "Distribuição de nutrientes equilibrada."
@@ -653,6 +717,84 @@ public final class GeminiAIService: ObservableObject {
         }
         
         return decoded
+    }
+
+    // MARK: - 4. Sugestão Inicial de Metas no Onboarding Obrigatório
+
+    public func suggestInitialGoals(
+        userName: String,
+        goal: FitnessGoal,
+        currentWeight: Double,
+        heightMeters: Double,
+        targetWeight: Double?,
+        activityLevel: String
+    ) async -> InitialGoalsAISuggestion {
+        let safeName = userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Atleta" : userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        var body: [String: Any] = [
+            "userName": safeName,
+            "goal": goal.rawValue,
+            "currentWeight": currentWeight,
+            "heightMeters": heightMeters,
+            "activityLevel": activityLevel
+        ]
+        if let targetWeight, targetWeight >= 30.0 {
+            body["targetWeight"] = targetWeight
+        }
+
+        do {
+            let responseJson = try await sendBackendAiRequest(
+                path: "suggest-initial-goals",
+                body: body
+            )
+            if let data = responseJson.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode(InitialGoalsAISuggestion.self, from: data),
+               decoded.dailyCalories >= 1000 {
+                return decoded
+            }
+        } catch {
+            print("⚠️ [Gemini AI] Fallback fisiológico acionado para metas iniciais: \(error.localizedDescription)")
+        }
+
+        // Cálculo fisiológico local equivalente (Mifflin-St Jeor + objetivo + nível de atividade) caso offline temporário
+        let lowerAct = activityLevel.lowercased()
+        let burn: Double = lowerAct.contains("intenso") ? 650.0 : (lowerAct.contains("leve") ? 350.0 : 500.0)
+        let steps: Double = lowerAct.contains("intenso") ? 10000.0 : (lowerAct.contains("leve") ? 7000.0 : 8500.0)
+        let idealBmiWeight = 22.5 * heightMeters * heightMeters
+        let resolvedTargetWeight: Double
+        if let targetWeight, targetWeight >= 30.0 {
+            resolvedTargetWeight = (targetWeight * 10.0).rounded() / 10.0
+        } else {
+            switch goal {
+            case .lose:
+                resolvedTargetWeight = ((max(45.0, min(currentWeight - 4.0, idealBmiWeight))) * 10.0).rounded() / 10.0
+            case .maintain:
+                resolvedTargetWeight = (currentWeight * 10.0).rounded() / 10.0
+            case .gain:
+                resolvedTargetWeight = ((max(currentWeight + 5.0, idealBmiWeight)) * 10.0).rounded() / 10.0
+            }
+        }
+
+        let metrics = Profile.computeContextualTargets(
+            weight: currentWeight,
+            height: heightMeters,
+            targetWeight: resolvedTargetWeight,
+            goal: goal,
+            targetCalorieBurn: burn,
+            targetSteps: steps
+        )
+        let explanation = "\(safeName), calculamos sua Taxa Basal (~\(Int(metrics.tmb)) kcal) e gasto diário (~\(Int(metrics.contextualTdee)) kcal) para \(String(format: "%.1f", currentWeight)) kg e \(String(format: "%.2f", heightMeters)) m rumo aos \(String(format: "%.1f", resolvedTargetWeight)) kg."
+
+        return InitialGoalsAISuggestion(
+            suggestedTargetWeight: resolvedTargetWeight,
+            dailyCalories: metrics.suggestedCalories,
+            proteinGrams: metrics.proteinGrams,
+            carbsGrams: metrics.carbsGrams,
+            fatGrams: metrics.fatGrams,
+            waterMilliliters: metrics.waterMilliliters,
+            targetCalorieBurn: burn,
+            targetSteps: steps,
+            explanation: explanation
+        )
     }
     
     // MARK: - Comunicação HTTP Segura via Backend Java (Proxy de IA)

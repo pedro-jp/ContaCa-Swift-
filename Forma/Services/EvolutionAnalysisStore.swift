@@ -62,6 +62,7 @@ public final class EvolutionAnalysisStore: ObservableObject {
         }
 
         return EvolutionAIAnalysis(
+            id: analysis.id,
             statusSummary: fix(analysis.statusSummary),
             calorieDiagnostic: fix(analysis.calorieDiagnostic),
             macroDiagnostic: fix(analysis.macroDiagnostic),

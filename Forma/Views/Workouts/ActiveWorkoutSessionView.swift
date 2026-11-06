@@ -582,16 +582,22 @@ struct ActiveWorkoutSessionView: View {
             notes: workoutNotes
         )
 
-        try? FormaDataStore.shared.insertWorkoutEntry(entry)
-
-        if let routine = routineToUpdate {
-            routine.lastTrainedAt = Date()
-            try? modelContext.save()
+        Task { @MainActor in
+            do {
+                try await FormaDataStore.shared.insertWorkoutEntryRemoteFirst(entry, routineTrained: routineToUpdate)
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.success)
+                dismiss()
+            } catch {
+                // Caso sem internet no fim da sessão ao vivo, salva via wrapper para não perder a sessão concluída
+                try? FormaDataStore.shared.insertWorkoutEntry(entry)
+                if let routine = routineToUpdate {
+                    routine.lastTrainedAt = Date()
+                    try? modelContext.save()
+                }
+                dismiss()
+            }
         }
-
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-        dismiss()
     }
 
     private func formatTime(_ totalSeconds: Int) -> String {

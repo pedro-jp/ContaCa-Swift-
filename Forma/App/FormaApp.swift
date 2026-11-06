@@ -41,19 +41,29 @@ struct FormaApp: App {
                 AppNavigationRouter.shared.handleDeepLink(url)
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                cleanupLegacyCalorieLiveActivities()
+                guard authManager.isAuthenticated else { return }
                 FormaDataStore.shared.syncTodayData()
                 FormaDataStore.shared.syncExternalHealthWorkoutsInBackground()
                 checkPendingWorkout()
-                cleanupLegacyCalorieLiveActivities()
-                triggerSync()
             }
             .task {
                 cleanupLegacyCalorieLiveActivities()
                 WorkoutNotificationManager.shared.setup()
-                FormaDataStore.shared.setupBackgroundHealthObserver()
-                FormaDataStore.shared.syncTodayData()
-                checkPendingWorkout()
-                triggerSync()
+                if authManager.isAuthenticated {
+                    FormaDataStore.shared.setupBackgroundHealthObserver()
+                    FormaDataStore.shared.syncTodayData()
+                    checkPendingWorkout()
+                    if !syncManager.hasCompletedInitialSessionPull {
+                        triggerSync()
+                    }
+                }
+            }
+            .onChange(of: authManager.isAuthenticated) { _, isAuth in
+                if isAuth {
+                    FormaDataStore.shared.setupBackgroundHealthObserver()
+                    checkPendingWorkout()
+                }
             }
         }
         .modelContainer(FormaDataStore.shared.container)

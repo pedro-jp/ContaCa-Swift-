@@ -30,11 +30,14 @@ struct HomeView: View {
 
     private var nomeUsuario: String {
         if let profileName = profile?.nome.trimmingCharacters(in: .whitespacesAndNewlines),
-           !profileName.isEmpty,
-           profileName != "João Pedro" || AuthManager.shared.currentUserName == nil {
+           !profileName.isEmpty {
             return profileName
         }
-        return AuthManager.shared.currentUserName ?? profile?.nome ?? "Usuário"
+        if let authName = AuthManager.shared.currentUserName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !authName.isEmpty {
+            return authName
+        }
+        return "Atleta"
     }
 
     private var objetivo: FitnessGoal { profile?.goal ?? .gain }

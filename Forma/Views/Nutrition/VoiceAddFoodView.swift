@@ -31,6 +31,8 @@ struct VoiceAddFoodView: View {
     @State private var customPortionString: String = ""
 
     @State private var isSavedSuccessfully: Bool = false
+    @State private var isSavingToDatabase: Bool = false
+    @State private var saveErrorMessage: String? = nil
     @FocusState private var isFieldFocused: Bool
     @State private var textDebounceTask: Task<Void, Never>? = nil
 
@@ -105,6 +107,17 @@ struct VoiceAddFoodView: View {
                 if let item = editingPortionItem {
                     Text("Informe o peso ou volume exato em \(item.isLiquid || item.unit == "ml" ? "ml" : "gramas (g)"):")
                 }
+            }
+            .alert(
+                "Erro ao Sincronizar Refeição",
+                isPresented: Binding(
+                    get: { saveErrorMessage != nil },
+                    set: { if !$0 { saveErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                Text(saveErrorMessage ?? "")
             }
             .onAppear {
                 voiceService.errorMessage = nil
@@ -532,16 +545,13 @@ struct VoiceAddFoodView: View {
     }
 
     private func confirmFoodEntry() {
-        guard let intent = voiceService.currentIntent, !intent.items.isEmpty else { return }
+        guard !isSavingToDatabase,
+              let intent = voiceService.currentIntent,
+              !intent.items.isEmpty else { return }
 
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-
-        var lastFoodName = ""
-        var lastFoodCal = 0.0
-
-        for item in intent.items {
-            let newEntry = FoodEntry(
+        let now = Date()
+        let entries: [FoodEntry] = intent.items.map { item in
+            FoodEntry(
                 name: item.name,
                 brand: item.brand,
                 mealType: intent.mealType,
@@ -550,35 +560,34 @@ struct VoiceAddFoodView: View {
                 protein: item.protein,
                 carbohydrates: item.carbs,
                 fat: item.fat,
-                date: Date()
+                date: now
             )
-            modelContext.insert(newEntry)
-            AppActivityLogManager.shared.logMeal(
-                id: newEntry.id.uuidString,
-                name: item.name,
-                mealType: intent.mealType.rawValue,
-                calories: item.calories,
-                protein: item.protein,
-                carbs: item.carbs,
-                fat: item.fat,
-                isSnack: intent.mealType == .snacks,
-                date: newEntry.date
-            )
-            lastFoodName = item.name
-            lastFoodCal = item.calories
-            onFoodSaved?(newEntry)
         }
 
-        FormaDataStore.shared.recalculateProfileWithFullContext(in: modelContext)
-        try? modelContext.save()
-        FormaDataStore.shared.syncTodayData(lastFoodName: lastFoodName, lastFoodCalories: lastFoodCal)
+        isSavingToDatabase = true
+        saveErrorMessage = nil
 
-        withAnimation(.spring(duration: 0.35)) {
-            isSavedSuccessfully = true
-        }
+        Task { @MainActor in
+            do {
+                try await FormaDataStore.shared.insertFoodEntriesRemoteFirst(entries)
+                for entry in entries {
+                    onFoodSaved?(entry)
+                }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            dismiss()
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.success)
+                isSavingToDatabase = false
+
+                withAnimation(.spring(duration: 0.35)) {
+                    isSavedSuccessfully = true
+                }
+
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                dismiss()
+            } catch {
+                isSavingToDatabase = false
+                saveErrorMessage = FormaAPIClient.humanizeErrorMessage(error.localizedDescription)
+            }
         }
     }
 }

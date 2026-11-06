@@ -605,14 +605,19 @@ struct AIWorkoutLoggerView: View {
             exercises: workout.exercises,
             notes: workout.aiFeedback
         )
-        
-        try? FormaDataStore.shared.insertWorkoutRoutine(routine)
-        
-        let feedback = UINotificationFeedbackGenerator()
-        feedback.notificationOccurred(.success)
-        
-        withAnimation {
-            isSavedAsRoutine = true
+
+        errorMessage = nil
+        Task { @MainActor in
+            do {
+                try await FormaDataStore.shared.saveWorkoutRoutineRemoteFirst(routine)
+                let feedback = UINotificationFeedbackGenerator()
+                feedback.notificationOccurred(.success)
+                withAnimation {
+                    isSavedAsRoutine = true
+                }
+            } catch {
+                errorMessage = FormaAPIClient.humanizeErrorMessage(error.localizedDescription)
+            }
         }
     }
     
@@ -626,19 +631,22 @@ struct AIWorkoutLoggerView: View {
             date: Date(),
             notes: workout.aiFeedback
         )
-        
-        try? FormaDataStore.shared.insertWorkoutEntry(entry)
-        
-        let feedback = UINotificationFeedbackGenerator()
-        feedback.notificationOccurred(.success)
-        
-        withAnimation {
-            isLoggedToHistory = true
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            onWorkoutLogged?()
-            dismiss()
+
+        errorMessage = nil
+        Task { @MainActor in
+            do {
+                try await FormaDataStore.shared.insertWorkoutEntryRemoteFirst(entry)
+                let feedback = UINotificationFeedbackGenerator()
+                feedback.notificationOccurred(.success)
+                withAnimation {
+                    isLoggedToHistory = true
+                }
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                onWorkoutLogged?()
+                dismiss()
+            } catch {
+                errorMessage = FormaAPIClient.humanizeErrorMessage(error.localizedDescription)
+            }
         }
     }
 }

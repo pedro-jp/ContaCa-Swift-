@@ -2,7 +2,8 @@
 //  FormaDataStore.swift
 //  Forma
 //
-//  Created by João Pedro on 10/29/26.
+//  Gerenciador centralizado Remote-First: toda ação grava primeiro no Supabase PostgreSQL
+//  e em seguida persiste no cache SwiftData local para leitura instantânea no iPhone.
 //
 
 import Foundation
@@ -10,18 +11,17 @@ import SwiftData
 import WidgetKit
 import HealthKit
 
-/// Gerenciador centralizado de dados SwiftData e sincronização em tempo real com Widgets e Live Activities
 @MainActor
 public final class FormaDataStore {
     public static let shared = FormaDataStore(inMemory: false)
-    
+
     public let container: ModelContainer
     private let isInMemoryStore: Bool
-    
+
     public var mainContext: ModelContext {
         container.mainContext
     }
-    
+
     public init(inMemory: Bool = false) {
         self.isInMemoryStore = inMemory
         let schema = Schema([
@@ -33,13 +33,13 @@ public final class FormaDataStore {
             WorkoutRoutine.self,
             WaterEntry.self
         ])
-        
+
         if inMemory {
             let memConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
             self.container = try! ModelContainer(for: schema, configurations: [memConfig])
             return
         }
-        
+
         do {
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
             self.container = try ModelContainer(for: schema, configurations: [config])
@@ -53,7 +53,7 @@ public final class FormaDataStore {
                 try? FileManager.default.removeItem(at: defaultShm)
                 try? FileManager.default.removeItem(at: defaultWal)
             }
-            
+
             do {
                 let freshConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
                 self.container = try ModelContainer(for: schema, configurations: [freshConfig])
@@ -62,6 +62,21 @@ public final class FormaDataStore {
                 self.container = try! ModelContainer(for: schema, configurations: [memConfig])
             }
         }
+    }
+
+    // MARK: - Barreira de Corte por Conta para Apple Saúde (Impede Vazamento de Treinos do Celular)
+
+    public static func setHealthKitImportCutoff(_ date: Date, forUserId userId: String) {
+        guard !userId.isEmpty else { return }
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "forma_healthkit_cutoff_\(userId)")
+    }
+
+    public static func healthKitImportCutoff(forUserId userId: String) -> Date? {
+        guard !userId.isEmpty else { return nil }
+        let key = "forma_healthkit_cutoff_\(userId)"
+        guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
+        let ts = UserDefaults.standard.double(forKey: key)
+        return ts > 0 ? Date(timeIntervalSince1970: ts) : nil
     }
 
     /// Garante que exista exatamente um Profile no contexto, consolidando eventuais duplicatas.
@@ -82,18 +97,129 @@ public final class FormaDataStore {
             return primary
         }
         let fresh = Profile(
-            nome: AuthManager.shared.currentUserName ?? "Usuário",
+            nome: AuthManager.shared.currentUserName ?? "",
             email: AuthManager.shared.currentUserEmail ?? ""
         )
         ctx.insert(fresh)
         try? ctx.save()
         return fresh
     }
-    
-    // MARK: - Inserção e Exclusão de Refeições
-    
-    func insertFoodEntries(_ entries: [FoodEntry]) throws {
+
+    // MARK: - 1. Configuração Inicial Obrigatória & Perfil (Remote-First)
+
+    public func completeInitialOnboardingRemoteFirst(
+        name: String,
+        goal: FitnessGoal,
+        currentWeight: Double,
+        heightMeters: Double,
+        targetWeight: Double,
+        targetCalorieIntake: Double,
+        targetProtein: Double,
+        targetCarbohydrates: Double,
+        targetFat: Double,
+        targetWaterMilliliters: Int,
+        targetCalorieBurn: Double,
+        targetSteps: Double
+    ) async throws {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Date()
+        let initialWeightId = UUID()
+
+        let profilePayload = RemoteProfilePayload(
+            name: cleanName,
+            goal: goal.rawValue,
+            targetCalorieIntake: targetCalorieIntake,
+            targetCalorieBurn: targetCalorieBurn,
+            targetSteps: targetSteps,
+            targetWeight: targetWeight,
+            targetProtein: targetProtein,
+            targetCarbohydrates: targetCarbohydrates,
+            targetFat: targetFat,
+            targetWaterMilliliters: targetWaterMilliliters,
+            heightMeters: heightMeters,
+            currentWeight: currentWeight,
+            onboardingCompleted: true
+        )
+
+        // 1. Grava PRIMEIRO no Supabase PostgreSQL (Perfil + Pesagem Inicial)
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.pushProfileRemoteFirst(profilePayload)
+            try await BackendSyncManager.shared.pushWeightRemoteFirst(
+                id: initialWeightId,
+                weight: currentWeight,
+                date: now,
+                notes: "Configuração inicial da conta",
+                profilePayload: profilePayload
+            )
+        }
+
+        // 2. Só após confirmação do banco, salva no cache SwiftData local do iPhone
+        let profile = ensureSingleProfile(in: mainContext)
+        profile.nome = cleanName
+        if let email = AuthManager.shared.currentUserEmail, !email.isEmpty {
+            profile.email = email
+        }
+        profile.goal = goal
+        profile.currentWeight = currentWeight
+        profile.height = heightMeters
+        profile.targetWeight = targetWeight
+        profile.targetCalorieIntake = targetCalorieIntake
+        profile.targetProtein = targetProtein
+        profile.targetCarbohydrates = targetCarbohydrates
+        profile.targetFat = targetFat
+        profile.targetWaterMilliliters = targetWaterMilliliters
+        profile.targetCalorieBurn = targetCalorieBurn
+        profile.targetSteps = targetSteps
+        profile.onboardingCompleted = true
+        profile.autoRecalculateGoals = true
+
+        let weightEntry = WeightEntry(
+            id: initialWeightId,
+            weight: currentWeight,
+            date: now,
+            notes: "Configuração inicial da conta"
+        )
+        mainContext.insert(weightEntry)
+        try mainContext.save()
+
+        if !isInMemoryStore {
+            AuthManager.shared.updateLocalUserName(cleanName)
+            if let userId = AuthManager.shared.currentUserId,
+               Self.healthKitImportCutoff(forUserId: userId) == nil {
+                Self.setHealthKitImportCutoff(now, forUserId: userId)
+            }
+            AppActivityLogManager.shared.logWeight(
+                id: initialWeightId.uuidString,
+                weightKg: currentWeight,
+                date: now,
+                notes: "Configuração inicial da conta"
+            )
+            syncTodayData(skipCloudSyncTrigger: true)
+        }
+    }
+
+    func saveProfileRemoteFirst(_ profile: Profile, overrideName: String? = nil) async throws {
+        let payload = RemoteProfilePayload.from(profile: profile, overrideName: overrideName)
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.pushProfileRemoteFirst(payload)
+        }
+        if let overrideName, !overrideName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            profile.nome = overrideName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !isInMemoryStore {
+                AuthManager.shared.updateLocalUserName(profile.nome)
+            }
+        }
+        try mainContext.save()
+        syncTodayData(skipCloudSyncTrigger: true)
+    }
+
+    // MARK: - 2. Refeições / Alimentos (Remote-First)
+
+    func insertFoodEntriesRemoteFirst(_ entries: [FoodEntry]) async throws {
         guard !entries.isEmpty else { return }
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.pushFoodsRemoteFirst(entries)
+        }
         for entry in entries {
             mainContext.insert(entry)
             if !isInMemoryStore {
@@ -112,9 +238,38 @@ public final class FormaDataStore {
         }
         recalculateProfileWithFullContext(in: mainContext)
         try mainContext.save()
-        
+
         let last = entries.last
-        syncTodayData(lastFoodName: last?.name, lastFoodCalories: last?.calories)
+        syncTodayData(lastFoodName: last?.name, lastFoodCalories: last?.calories, skipCloudSyncTrigger: false)
+    }
+
+    func deleteFoodEntriesRemoteFirst(_ entries: [FoodEntry], in context: ModelContext? = nil) async throws {
+        guard !entries.isEmpty else { return }
+        let ctx = context ?? mainContext
+        let deletedIds = entries.map(\.id)
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.deleteFoodsRemoteFirst(deletedIds)
+            AppActivityLogManager.shared.removeRecords(ids: deletedIds.map(\.uuidString))
+        }
+        for entry in entries {
+            ctx.delete(entry)
+        }
+        recalculateProfileWithFullContext(in: ctx)
+        try ctx.save()
+        syncTodayData(skipCloudSyncTrigger: false)
+    }
+
+    func insertFoodEntries(_ entries: [FoodEntry]) throws {
+        guard !entries.isEmpty else { return }
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            for entry in entries { mainContext.insert(entry) }
+            recalculateProfileWithFullContext(in: mainContext)
+            try mainContext.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.insertFoodEntriesRemoteFirst(entries)
+        }
     }
 
     func deleteFoodEntry(_ entry: FoodEntry, in context: ModelContext? = nil) {
@@ -123,22 +278,20 @@ public final class FormaDataStore {
 
     func deleteFoodEntries(_ entries: [FoodEntry], in context: ModelContext? = nil) {
         guard !entries.isEmpty else { return }
-        let ctx = context ?? mainContext
-        let deletedIds = entries.map(\.id)
-        if !isInMemoryStore {
-            BackendSyncManager.shared.recordDeletedFoodIds(deletedIds)
-            AppActivityLogManager.shared.removeRecords(ids: deletedIds.map(\.uuidString))
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            let ctx = context ?? mainContext
+            for entry in entries { ctx.delete(entry) }
+            recalculateProfileWithFullContext(in: ctx)
+            try? ctx.save()
+            return
         }
-        for entry in entries {
-            ctx.delete(entry)
+        Task { @MainActor in
+            try? await self.deleteFoodEntriesRemoteFirst(entries, in: context)
         }
-        recalculateProfileWithFullContext(in: ctx)
-        try? ctx.save()
-        syncTodayData()
     }
-    
+
     // MARK: - Motor de Contexto Completo para Recálculo Fisiológico
-    
+
     func buildRecalculationContext(in context: ModelContext? = nil) -> RecalculationContext {
         let ctx = context ?? mainContext
         let calendar = Calendar.current
@@ -146,8 +299,7 @@ public final class FormaDataStore {
         let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now) ?? now
         let fourteenDaysAgo = calendar.date(byAdding: .day, value: -14, to: now) ?? now
         let twentyOneDaysAgo = calendar.date(byAdding: .day, value: -21, to: now) ?? now
-        
-        // 1. Treinos reais (7d / 14d)
+
         let workoutDescriptor = FetchDescriptor<WorkoutEntry>(
             predicate: #Predicate { entry in
                 entry.date >= fourteenDaysAgo
@@ -157,8 +309,7 @@ public final class FormaDataStore {
         let sum14d = workouts14d.reduce(0.0) { $0 + $1.caloriesBurned }
         let sum7d = workouts14d.filter { $0.date >= sevenDaysAgo }.reduce(0.0) { $0 + $1.caloriesBurned }
         let avgDailyWorkoutBurn = max(sum14d / 14.0, sum7d / 7.0)
-        
-        // 2. Fichas de treino salvas
+
         let routines = (try? ctx.fetch(FetchDescriptor<WorkoutRoutine>())) ?? []
         let routineEstimatedDailyBurn: Double
         if !routines.isEmpty {
@@ -168,11 +319,9 @@ public final class FormaDataStore {
         } else {
             routineEstimatedDailyBurn = 0.0
         }
-        
-        // 3. Passos reais do Apple Saúde / Widget
+
         let recentSteps = Double(WidgetDataManager.shared.loadWidgetData().stepsCount)
-        
-        // 4. Tendência real de peso (últimos 21 dias)
+
         let weightDescriptor = FetchDescriptor<WeightEntry>(
             predicate: #Predicate { entry in
                 entry.date >= twentyOneDaysAgo
@@ -187,8 +336,7 @@ public final class FormaDataStore {
                 weeklyWeightTrendKg = ((last.weight - first.weight) / daysSpan) * 7.0
             }
         }
-        
-        // 5. Média de ingestão calórica nos dias registrados (últimos 7 dias)
+
         let foodDescriptor = FetchDescriptor<FoodEntry>(
             predicate: #Predicate { entry in
                 entry.date >= sevenDaysAgo
@@ -206,7 +354,7 @@ public final class FormaDataStore {
                 recentAvgIntake = byDay.values.reduce(0.0, +) / Double(byDay.count)
             }
         }
-        
+
         return RecalculationContext(
             workoutsLast14DaysCount: workouts14d.count,
             avgDailyWorkoutBurn: avgDailyWorkoutBurn,
@@ -216,31 +364,43 @@ public final class FormaDataStore {
             recentAvgCalorieIntake: recentAvgIntake
         )
     }
-    
+
     func recalculateProfileWithFullContext(
         for weight: Double? = nil,
         profile overrideProfile: Profile? = nil,
         in context: ModelContext? = nil
     ) {
         let ctx = context ?? mainContext
-        guard let targetProfile = overrideProfile ?? (try? ctx.fetch(FetchDescriptor<Profile>()).first) else {
+        guard let targetProfile = overrideProfile ?? (try? ctx.fetch(FetchDescriptor<Profile>()).first),
+              targetProfile.onboardingCompleted else {
             return
         }
         let recalcContext = buildRecalculationContext(in: ctx)
         targetProfile.recalculateDailyGoals(for: weight, context: recalcContext)
     }
-    
-    // MARK: - Inserção e Exclusão de Treinos
-    
-    func insertWorkoutEntry(_ entry: WorkoutEntry) throws {
+
+    // MARK: - 3. Treinos Realizados (Remote-First)
+
+    func insertWorkoutEntryRemoteFirst(
+        _ entry: WorkoutEntry,
+        routineTrained: WorkoutRoutine? = nil,
+        saveToAppleHealth: Bool = true
+    ) async throws {
+        let trainedAt = Date()
+        if let routine = routineTrained {
+            routine.lastTrainedAt = trainedAt
+        }
+
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.pushWorkoutRemoteFirst(entry, updatedRoutine: routineTrained)
+        }
+
         mainContext.insert(entry)
         recalculateProfileWithFullContext(in: mainContext)
         try mainContext.save()
-        syncTodayData()
-        
+
         guard !isInMemoryStore else { return }
-        
-        // Registra no arquivo físico de atividades
+
         AppActivityLogManager.shared.logWorkout(
             id: entry.id.uuidString,
             title: entry.title,
@@ -250,31 +410,59 @@ public final class FormaDataStore {
             date: entry.date,
             details: entry.notes
         )
-        
-        // Salva no Apple Health
-        HealthManager.shared.saveWorkout(
-            title: entry.title,
-            workoutType: entry.workoutType,
-            caloriesBurned: entry.caloriesBurned,
-            durationMinutes: entry.durationMinutes,
-            date: entry.date
-        )
+
+        if saveToAppleHealth {
+            HealthManager.shared.saveWorkout(
+                title: entry.title,
+                workoutType: entry.workoutType,
+                caloriesBurned: entry.caloriesBurned,
+                durationMinutes: entry.durationMinutes,
+                date: entry.date
+            )
+        }
+
+        syncTodayData(skipCloudSyncTrigger: false)
     }
 
-    func deleteWorkoutEntry(_ entry: WorkoutEntry, in context: ModelContext? = nil) {
+    func deleteWorkoutEntryRemoteFirst(_ entry: WorkoutEntry, in context: ModelContext? = nil) async throws {
         let ctx = context ?? mainContext
         let deletedId = entry.id
         if !isInMemoryStore {
-            BackendSyncManager.shared.recordDeletedWorkoutIds([deletedId])
+            try await BackendSyncManager.shared.deleteWorkoutRemoteFirst(deletedId)
             AppActivityLogManager.shared.removeRecords(ids: [deletedId.uuidString])
         }
         ctx.delete(entry)
         recalculateProfileWithFullContext(in: ctx)
-        try? ctx.save()
-        syncTodayData()
+        try ctx.save()
+        syncTodayData(skipCloudSyncTrigger: false)
     }
 
-    // MARK: - Sincronização Automática em Segundo Plano (Apple Saúde / Strava)
+    func insertWorkoutEntry(_ entry: WorkoutEntry) throws {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            mainContext.insert(entry)
+            recalculateProfileWithFullContext(in: mainContext)
+            try mainContext.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.insertWorkoutEntryRemoteFirst(entry)
+        }
+    }
+
+    func deleteWorkoutEntry(_ entry: WorkoutEntry, in context: ModelContext? = nil) {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            let ctx = context ?? mainContext
+            ctx.delete(entry)
+            recalculateProfileWithFullContext(in: ctx)
+            try? ctx.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.deleteWorkoutEntryRemoteFirst(entry, in: context)
+        }
+    }
+
+    // MARK: - Sincronização Protegida do Apple Saúde (Isolada por Conta Autenticada)
 
     func setupBackgroundHealthObserver() {
         guard !isInMemoryStore else { return }
@@ -292,70 +480,324 @@ public final class FormaDataStore {
     }
 
     func syncExternalHealthWorkoutsInBackground(days: Int = 7, in _: ModelContext? = nil) {
-        guard !isInMemoryStore else { return }
+        guard !isInMemoryStore,
+              AuthManager.shared.isAuthenticated,
+              let userId = AuthManager.shared.currentUserId,
+              !userId.isEmpty else {
+            return
+        }
+
+        guard let profile = (try? mainContext.fetch(FetchDescriptor<Profile>()).first),
+              !profile.requiresInitialSetup else {
+            return
+        }
+
+        let cutoffDate = Self.healthKitImportCutoff(forUserId: userId)
 
         HealthManager.shared.requestAuthorization { [weak self] success, _ in
             guard success else { return }
             Task { @MainActor in
                 guard let self else { return }
                 HealthManager.shared.fetchExternalWorkoutSamples(days: days) { [weak self] samples in
-                    guard let self, !samples.isEmpty else { return }
+                    guard let self,
+                          !samples.isEmpty,
+                          AuthManager.shared.isAuthenticated,
+                          AuthManager.shared.currentUserId == userId else { return }
+
                     let targetContext = self.mainContext
                     let existingWorkouts = (try? targetContext.fetch(FetchDescriptor<WorkoutEntry>())) ?? []
+
+                    // Se a conta não possui treinos e não tinha cutoff gravado, define cutoff agora para não puxar treinos antigos de terceiros no aparelho
+                    let effectiveCutoff: Date?
+                    if let cutoffDate {
+                        effectiveCutoff = cutoffDate
+                    } else if existingWorkouts.isEmpty {
+                        let now = Date()
+                        Self.setHealthKitImportCutoff(now, forUserId: userId)
+                        effectiveCutoff = now
+                    } else {
+                        effectiveCutoff = nil
+                    }
+
                     var existingKeys = Set(existingWorkouts.map { "\($0.title)_\(Int($0.date.timeIntervalSince1970))" })
-                    var importedCount = 0
+                    var candidates: [WorkoutEntry] = []
 
                     for sample in samples {
+                        if let effectiveCutoff, sample.startDate < effectiveCutoff {
+                            continue
+                        }
                         let uniqueKey = "\(sample.title)_\(Int(sample.startDate.timeIntervalSince1970))"
                         guard !existingKeys.contains(uniqueKey) else { continue }
                         existingKeys.insert(uniqueKey)
 
-                        let entry = WorkoutEntry(
+                        candidates.append(WorkoutEntry(
                             title: sample.title,
                             workoutType: sample.workoutType,
                             durationMinutes: sample.durationMinutes,
                             caloriesBurned: sample.caloriesBurned,
                             date: sample.startDate,
                             notes: "Sincronizado automaticamente (\(sample.sourceName))"
-                        )
-                        targetContext.insert(entry)
-                        AppActivityLogManager.shared.logWorkout(
-                            id: entry.id.uuidString,
-                            title: entry.title,
-                            workoutType: entry.workoutType.rawValue,
-                            durationMinutes: entry.durationMinutes,
-                            caloriesBurned: entry.caloriesBurned,
-                            date: entry.date,
-                            details: entry.notes
-                        )
-                        importedCount += 1
+                        ))
                     }
 
-                    if importedCount > 0 {
-                        self.recalculateProfileWithFullContext(in: targetContext)
-                        try? targetContext.save()
-                        self.syncTodayData()
+                    guard !candidates.isEmpty else { return }
+                    Task { @MainActor in
+                        for entry in candidates {
+                            try? await self.insertWorkoutEntryRemoteFirst(entry, saveToAppleHealth: false)
+                        }
                     }
                 }
             }
         }
     }
-    
-    // MARK: - Sincronização Geral de Métricas Hoje
-    
-    // MARK: - Ingestão de Água e Sincronização de Fila
-    
-    func syncPendingWater() {
-        let pending = WidgetDataManager.shared.drainPendingWater()
-        if pending > 0 {
-            let entry = WaterEntry(milliliters: pending, date: Date())
-            mainContext.insert(entry)
-            try? mainContext.save()
+
+    // MARK: - 4. Hidratação e Pesagens (Remote-First)
+
+    func insertWaterEntryRemoteFirst(_ entry: WaterEntry) async throws {
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.pushWaterRemoteFirst(entry)
+        }
+        mainContext.insert(entry)
+        try mainContext.save()
+        if !isInMemoryStore {
             AppActivityLogManager.shared.logWater(
                 id: entry.id.uuidString,
                 milliliters: entry.milliliters,
                 date: entry.date
             )
+        }
+        syncTodayData(skipCloudSyncTrigger: true)
+    }
+
+    func deleteWaterEntryRemoteFirst(_ entry: WaterEntry, in context: ModelContext? = nil) async throws {
+        let ctx = context ?? mainContext
+        let waterId = entry.id
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.deleteWaterRemoteFirst(waterId)
+            AppActivityLogManager.shared.removeRecords(ids: [waterId.uuidString])
+        }
+        ctx.delete(entry)
+        try ctx.save()
+        syncTodayData(skipCloudSyncTrigger: true)
+    }
+
+    public func createWeightEntryRemoteFirst(weight: Double, date: Date, notes: String) async throws {
+        let entryId = UUID()
+        let profile = ensureSingleProfile(in: mainContext)
+
+        let previousWeight = profile.currentWeight
+        profile.currentWeight = weight
+        profile.autoRecalculateGoals = true
+        recalculateProfileWithFullContext(for: weight, profile: profile, in: mainContext)
+        let profilePayload = RemoteProfilePayload.from(profile: profile)
+
+        if !isInMemoryStore {
+            do {
+                try await BackendSyncManager.shared.pushWeightRemoteFirst(
+                    id: entryId,
+                    weight: weight,
+                    date: date,
+                    notes: notes,
+                    profilePayload: profilePayload
+                )
+            } catch {
+                profile.currentWeight = previousWeight
+                recalculateProfileWithFullContext(for: previousWeight, profile: profile, in: mainContext)
+                throw error
+            }
+        }
+
+        let entry = WeightEntry(id: entryId, weight: weight, date: date, notes: notes)
+        mainContext.insert(entry)
+        try mainContext.save()
+
+        if !isInMemoryStore {
+            AppActivityLogManager.shared.logWeight(id: entryId.uuidString, weightKg: weight, date: date, notes: notes)
+            syncTodayData(skipCloudSyncTrigger: true)
+        }
+    }
+
+    func deleteWeightEntryRemoteFirst(_ entry: WeightEntry, in context: ModelContext? = nil) async throws {
+        let ctx = context ?? mainContext
+        let weightId = entry.id
+
+        let remainingDesc = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.date, order: .reverse)])
+        let remaining = (try? ctx.fetch(remainingDesc)) ?? []
+        let nextLatest = remaining.first(where: { $0.id != weightId })
+        let profile = (try? ctx.fetch(FetchDescriptor<Profile>()).first)
+
+        var updatedPayload: RemoteProfilePayload? = nil
+        if let profile, let nextLatest {
+            let previewMetrics = Profile.computeContextualTargets(
+                weight: nextLatest.weight,
+                height: profile.height,
+                targetWeight: profile.targetWeight,
+                goal: profile.goal,
+                targetCalorieBurn: profile.targetCalorieBurn,
+                targetSteps: profile.targetSteps,
+                context: buildRecalculationContext(in: ctx)
+            )
+            updatedPayload = RemoteProfilePayload(
+                name: profile.nome,
+                goal: profile.goalRaw,
+                targetCalorieIntake: previewMetrics.suggestedCalories,
+                targetCalorieBurn: profile.targetCalorieBurn,
+                targetSteps: profile.targetSteps,
+                targetWeight: profile.targetWeight,
+                targetProtein: previewMetrics.proteinGrams,
+                targetCarbohydrates: previewMetrics.carbsGrams,
+                targetFat: previewMetrics.fatGrams,
+                targetWaterMilliliters: previewMetrics.waterMilliliters,
+                heightMeters: profile.height,
+                currentWeight: nextLatest.weight,
+                onboardingCompleted: profile.onboardingCompleted
+            )
+        }
+
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.deleteWeightRemoteFirst(weightId, updatedProfile: updatedPayload)
+            AppActivityLogManager.shared.removeRecords(ids: [weightId.uuidString])
+        }
+
+        ctx.delete(entry)
+        if let profile, let nextLatest {
+            profile.currentWeight = nextLatest.weight
+            recalculateProfileWithFullContext(for: nextLatest.weight, profile: profile, in: ctx)
+        } else {
+            recalculateProfileWithFullContext(in: ctx)
+        }
+        try ctx.save()
+        syncTodayData(skipCloudSyncTrigger: true)
+    }
+
+    // MARK: - 5. Fichas de Treino & Análises de IA (Remote-First)
+
+    func saveWorkoutRoutineRemoteFirst(_ routine: WorkoutRoutine) async throws {
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.pushRoutineRemoteFirst(routine)
+        }
+        let existing = (try? mainContext.fetch(FetchDescriptor<WorkoutRoutine>())) ?? []
+        if !existing.contains(where: { $0.id == routine.id }) {
+            mainContext.insert(routine)
+        }
+        recalculateProfileWithFullContext(in: mainContext)
+        try mainContext.save()
+        syncTodayData(skipCloudSyncTrigger: false)
+    }
+
+    func deleteWorkoutRoutineRemoteFirst(_ routine: WorkoutRoutine, in context: ModelContext? = nil) async throws {
+        let ctx = context ?? mainContext
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.deleteRoutineRemoteFirst(routine.id)
+        }
+        ctx.delete(routine)
+        recalculateProfileWithFullContext(in: ctx)
+        try ctx.save()
+        syncTodayData(skipCloudSyncTrigger: false)
+    }
+
+    func toggleFavoriteRoutineRemoteFirst(_ routine: WorkoutRoutine) async throws {
+        routine.isFavorite.toggle()
+        if !isInMemoryStore {
+            do {
+                try await BackendSyncManager.shared.pushRoutineRemoteFirst(routine)
+            } catch {
+                routine.isFavorite.toggle()
+                throw error
+            }
+        }
+        try mainContext.save()
+    }
+
+    public func saveEvolutionAnalysisRemoteFirst(_ analysis: EvolutionAIAnalysis) async throws {
+        if !isInMemoryStore {
+            try await BackendSyncManager.shared.pushAnalysisRemoteFirst(analysis)
+        }
+        EvolutionAnalysisStore.shared.save(analysis)
+    }
+
+    // MARK: - Wrappers Síncronos (Delegam para Remote-First)
+
+    func insertWorkoutRoutine(_ routine: WorkoutRoutine) throws {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            mainContext.insert(routine)
+            recalculateProfileWithFullContext(in: mainContext)
+            try mainContext.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.saveWorkoutRoutineRemoteFirst(routine)
+        }
+    }
+
+    func deleteWorkoutRoutine(_ routine: WorkoutRoutine, in context: ModelContext? = nil) throws {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            let ctx = context ?? mainContext
+            ctx.delete(routine)
+            try ctx.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.deleteWorkoutRoutineRemoteFirst(routine, in: context)
+        }
+    }
+
+    func toggleFavoriteRoutine(_ routine: WorkoutRoutine) throws {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            routine.isFavorite.toggle()
+            try mainContext.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.toggleFavoriteRoutineRemoteFirst(routine)
+        }
+    }
+
+    func insertWaterEntry(_ entry: WaterEntry) throws {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            mainContext.insert(entry)
+            try mainContext.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.insertWaterEntryRemoteFirst(entry)
+        }
+    }
+
+    func deleteWaterEntry(_ entry: WaterEntry, in context: ModelContext? = nil) {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            let ctx = context ?? mainContext
+            ctx.delete(entry)
+            try? ctx.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.deleteWaterEntryRemoteFirst(entry, in: context)
+        }
+    }
+
+    func deleteWeightEntry(_ entry: WeightEntry, in context: ModelContext? = nil) {
+        if isInMemoryStore || !AuthManager.shared.isAuthenticated {
+            let ctx = context ?? mainContext
+            ctx.delete(entry)
+            try? ctx.save()
+            return
+        }
+        Task { @MainActor in
+            try? await self.deleteWeightEntryRemoteFirst(entry, in: context)
+        }
+    }
+
+    // MARK: - Sincronização de Água Pendente do Widget e Métricas do Dia
+
+    func syncPendingWater() {
+        guard AuthManager.shared.isAuthenticated else { return }
+        let pending = WidgetDataManager.shared.drainPendingWater()
+        if pending > 0 {
+            let entry = WaterEntry(milliliters: pending, date: Date())
+            Task { @MainActor in
+                try? await self.insertWaterEntryRemoteFirst(entry)
+            }
         }
     }
 
@@ -368,25 +810,23 @@ public final class FormaDataStore {
     ) {
         guard !isInMemoryStore else { return }
         syncPendingWater()
-        
+
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: Date())
         let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? Date()
-        
-        // 1. Busca todos os alimentos registrados hoje
+
         let foodDescriptor = FetchDescriptor<FoodEntry>(
             predicate: #Predicate { entry in
                 entry.date >= startOfDay && entry.date < endOfDay
             }
         )
         let foods = (try? mainContext.fetch(foodDescriptor)) ?? []
-        
+
         let totalCalories = foods.reduce(0.0) { $0 + $1.calories }
         let totalProtein = foods.reduce(0.0) { $0 + $1.protein }
         let totalCarbs = foods.reduce(0.0) { $0 + $1.carbohydrates }
         let totalFat = foods.reduce(0.0) { $0 + $1.fat }
-        
-        // 2. Busca treinos registrados hoje no app
+
         let workoutDescriptor = FetchDescriptor<WorkoutEntry>(
             predicate: #Predicate { entry in
                 entry.date >= startOfDay && entry.date < endOfDay
@@ -394,8 +834,7 @@ public final class FormaDataStore {
         )
         let workouts = (try? mainContext.fetch(workoutDescriptor)) ?? []
         let workoutBurned = workouts.reduce(0.0) { $0 + $1.caloriesBurned }
-        
-        // 3. Busca água registrada hoje
+
         let waterDescriptor = FetchDescriptor<WaterEntry>(
             predicate: #Predicate { entry in
                 entry.date >= startOfDay && entry.date < endOfDay
@@ -403,34 +842,28 @@ public final class FormaDataStore {
         )
         let waters = (try? mainContext.fetch(waterDescriptor)) ?? []
         let waterConsumed = waters.reduce(0) { $0 + $1.milliliters }
-        
-        // 4. Busca metas e preferências do Perfil
+
         let profileDescriptor = FetchDescriptor<Profile>()
         let profiles = (try? mainContext.fetch(profileDescriptor)) ?? []
         let profile = profiles.first ?? Profile()
-        
+
         let baseTargetCalories = profile.targetCalorieIntake > 0 ? profile.targetCalorieIntake : 2800.0
         let targetProtein = profile.targetProtein > 0 ? profile.targetProtein : 160.0
         let targetCarbs = profile.targetCarbohydrates > 0 ? profile.targetCarbohydrates : 380.0
         let targetFat = profile.targetFat > 0 ? profile.targetFat : 70.0
         let waterTarget = profile.targetWaterMilliliters > 0 ? profile.targetWaterMilliliters : 2500
         let goalRaw = profile.goalRaw
-        
-        // Determina calorias ativas gastas (treinos do app + passos/atividades do Apple Health)
+
         let activeBurned: Double
         if let override = activeCaloriesOverride, override > 0 {
             activeBurned = max(workoutBurned, override)
         } else {
             activeBurned = workoutBurned
         }
-        
-        // Total de calorias gastas: Taxa Metabólica Basal (TMB) + Calorias Ativas Gastas
+
         let totalBurned = profile.tmb + activeBurned
-        
-        // Meta de Calorias Ajustada: Meta Base + Calorias Ativas Gastas (aumenta progressivamente conforme gasta)
         let adjustedTargetCalories = baseTargetCalories + activeBurned
-        
-        // 5. Salva nos Widgets através do WidgetDataManager compartilhado
+
         let widgetData = WidgetCalorieData(
             caloriesConsumed: totalCalories,
             caloriesTarget: adjustedTargetCalories,
@@ -450,9 +883,8 @@ public final class FormaDataStore {
             lastUpdated: Date()
         )
         WidgetDataManager.shared.saveWidgetData(widgetData)
-        
-        // Se foi chamado sem override do HealthKit, dispara leitura em background para atualizar com os passos/calorias do Saúde
-        if activeCaloriesOverride == nil {
+
+        if activeCaloriesOverride == nil && AuthManager.shared.isAuthenticated && !profile.requiresInitialSetup {
             HealthManager.shared.fetchTodayCalories { [weak self] healthCalories in
                 HealthManager.shared.fetchTodaySteps { healthSteps in
                     Task { @MainActor in
@@ -460,7 +892,7 @@ public final class FormaDataStore {
                         let currentActive = max(workoutBurned, healthCalories)
                         let newTotalBurned = profile.tmb + currentActive
                         let newAdjustedTarget = baseTargetCalories + currentActive
-                        
+
                         let updatedWidgetData = WidgetCalorieData(
                             caloriesConsumed: totalCalories,
                             caloriesTarget: newAdjustedTarget,
@@ -484,8 +916,7 @@ public final class FormaDataStore {
                 }
             }
         }
-        
-        // 6. Atualiza lembretes insistentes de água (06h-22h) e refeições com o saldo atual do dia
+
         let hasBreakfast = foods.contains { $0.mealType == .breakfast }
         let hasLunch = foods.contains { $0.mealType == .lunch }
         let hasDinner = foods.contains { $0.mealType == .dinner }
@@ -497,23 +928,20 @@ public final class FormaDataStore {
             hasLoggedDinner: hasDinner
         )
 
-        // 7. Dispara sincronização automática e silenciosa com a nuvem (Supabase) em segundo plano
         if !skipCloudSyncTrigger {
             Task { @MainActor in
                 BackendSyncManager.shared.triggerAutoSync()
             }
         }
     }
-    
+
     // MARK: - Isolamento Multi-Usuário (Limpeza Total Local na Troca de Conta / Logout)
-    
+
     public func resetLocalDataForUserSwitch(userName: String?, userEmail: String?) {
-        // 1. Limpa fila pendente do widget
         if !isInMemoryStore {
             _ = WidgetDataManager.shared.drainPendingWater()
         }
-        
-        // 2. Remove todos os registros da conta anterior no SwiftData
+
         if let foods = try? mainContext.fetch(FetchDescriptor<FoodEntry>()) {
             for item in foods { mainContext.delete(item) }
         }
@@ -535,103 +963,22 @@ public final class FormaDataStore {
         if let healths = try? mainContext.fetch(FetchDescriptor<Health>()) {
             for item in healths { mainContext.delete(item) }
         }
-        
-        // 3. Insere perfil limpo para a nova sessão (será preenchido pelo pull da nuvem se já tiver histórico)
-        let cleanName = (userName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? userName! : "Usuário"
-        let cleanEmail = (userEmail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? userEmail! : ""
-        let freshProfile = Profile(nome: cleanName, email: cleanEmail)
+
+        let cleanName = (userName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? userName!.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let cleanEmail = (userEmail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? userEmail!.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let freshProfile = Profile(nome: cleanName, email: cleanEmail, onboardingCompleted: false)
         mainContext.insert(freshProfile)
         mainContext.insert(Health())
-        
+
         try? mainContext.save()
-        
-        // 4. Limpa diagnósticos da IA e logs físicos locais da conta anterior
+
         if !isInMemoryStore {
             EvolutionAnalysisStore.shared.clear()
             AppActivityLogManager.shared.clearAll()
-            
-            // 5. Atualiza dados dos widgets zerados sem disparar push para nuvem
+            SharedWorkoutSessionManager.shared.clearSession()
+
             syncTodayData(skipCloudSyncTrigger: true)
             WidgetCenter.shared.reloadAllTimelines()
         }
-    }
-    
-    // MARK: - Rotinas e Fichas de Treino
-    
-    func insertWorkoutRoutine(_ routine: WorkoutRoutine) throws {
-        mainContext.insert(routine)
-        recalculateProfileWithFullContext(in: mainContext)
-        try mainContext.save()
-        syncTodayData()
-    }
-    
-    func deleteWorkoutRoutine(_ routine: WorkoutRoutine, in context: ModelContext? = nil) throws {
-        let ctx = context ?? mainContext
-        let routineId = routine.id
-        if !isInMemoryStore {
-            BackendSyncManager.shared.recordDeletedRoutineIds([routineId])
-        }
-        ctx.delete(routine)
-        recalculateProfileWithFullContext(in: ctx)
-        try ctx.save()
-        syncTodayData()
-    }
-    
-    func toggleFavoriteRoutine(_ routine: WorkoutRoutine) throws {
-        routine.isFavorite.toggle()
-        try mainContext.save()
-        Task { @MainActor in
-            BackendSyncManager.shared.triggerAutoSync()
-        }
-    }
-    
-    // MARK: - Ingestão de Água e Pesagens
-    
-    func insertWaterEntry(_ entry: WaterEntry) throws {
-        mainContext.insert(entry)
-        try mainContext.save()
-        if !isInMemoryStore {
-            AppActivityLogManager.shared.logWater(
-                id: entry.id.uuidString,
-                milliliters: entry.milliliters,
-                date: entry.date
-            )
-        }
-        syncTodayData()
-    }
-
-    func deleteWaterEntry(_ entry: WaterEntry, in context: ModelContext? = nil) {
-        let ctx = context ?? mainContext
-        let waterId = entry.id
-        if !isInMemoryStore {
-            BackendSyncManager.shared.recordDeletedWaterIds([waterId])
-            AppActivityLogManager.shared.removeRecords(ids: [waterId.uuidString])
-        }
-        ctx.delete(entry)
-        try? ctx.save()
-        syncTodayData()
-    }
-
-    func deleteWeightEntry(_ entry: WeightEntry, in context: ModelContext? = nil) {
-        let ctx = context ?? mainContext
-        let weightId = entry.id
-        if !isInMemoryStore {
-            BackendSyncManager.shared.recordDeletedWeightIds([weightId])
-            AppActivityLogManager.shared.removeRecords(ids: [weightId.uuidString])
-        }
-        ctx.delete(entry)
-
-        let remainingDesc = FetchDescriptor<WeightEntry>(sortBy: [SortDescriptor(\.date, order: .reverse)])
-        let remaining = (try? ctx.fetch(remainingDesc)) ?? []
-        if let latest = remaining.first(where: { $0.id != weightId }),
-           let profile = (try? ctx.fetch(FetchDescriptor<Profile>()).first) {
-            profile.currentWeight = latest.weight
-            recalculateProfileWithFullContext(for: latest.weight, profile: profile, in: ctx)
-        } else {
-            recalculateProfileWithFullContext(in: ctx)
-        }
-
-        try? ctx.save()
-        syncTodayData()
     }
 }

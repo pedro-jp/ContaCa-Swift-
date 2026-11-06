@@ -93,7 +93,6 @@ struct WorkoutsView: View {
             .onAppear {
                 healthVM.loadHealthData()
                 FormaDataStore.shared.syncExternalHealthWorkoutsInBackground(in: modelContext)
-                seedInitialRoutinesIfNeeded()
             }
             .sheet(isPresented: $showAddWorkout) {
                 AddWorkoutView()
@@ -357,53 +356,6 @@ struct WorkoutsView: View {
                 .padding(.horizontal, FormaTheme.Spacing.screenHorizontal)
             }
         }
-    }
-
-    private func seedInitialRoutinesIfNeeded() {
-        let userScope = AuthManager.shared.currentUserId ?? "local"
-        let seedKey = "forma_seeded_initial_routines_\(userScope)"
-        if !routines.isEmpty {
-            UserDefaults.standard.set(true, forKey: seedKey)
-            return
-        }
-        guard !UserDefaults.standard.bool(forKey: seedKey) else { return }
-        UserDefaults.standard.set(true, forKey: seedKey)
-
-        let routinePeito = WorkoutRoutine(
-            title: "Peitoral & Tríceps - Hipertrofia",
-            workoutType: .bodybuilding,
-            targetMuscles: "Peitoral Maior, Tríceps Braquial, Deltoide Anterior",
-            hypertrophyFocus: "Tensão mecânica máxima, amplitude completa e cadência 3-0-1-0 na excêntrica",
-            estimatedDurationMinutes: 55,
-            estimatedCalories: 380,
-            recommendedRestSeconds: 90,
-            isFavorite: true,
-            exercises: [
-                WorkoutExerciseItem(name: "Supino Reto com Barra", sets: 4, reps: "8-10", suggestedWeight: "30kg/lado", targetMuscle: "Peitoral Maior", executionTip: "Escápulas aduzidas e cotovelos a 45º", restSeconds: 90, animationId: "supino_reto"),
-                WorkoutExerciseItem(name: "Supino Inclinado com Halteres", sets: 3, reps: "10-12", suggestedWeight: "24kg/halter", targetMuscle: "Peitoral Clavicular", executionTip: "Controle firme na descida profunda", restSeconds: 90, animationId: "supino_inclinado"),
-                WorkoutExerciseItem(name: "Crossover na Polia Média", sets: 3, reps: "12-15", suggestedWeight: "15kg/lado", targetMuscle: "Esterno-costal", executionTip: "Pico de contração de 1s no centro", restSeconds: 60, animationId: "crossover_polia"),
-                WorkoutExerciseItem(name: "Tríceps Corda na Polia", sets: 4, reps: "10-12", suggestedWeight: "25kg", targetMuscle: "Tríceps Lateral", executionTip: "Abra a corda no final estendendo o cotovelo", restSeconds: 60, animationId: "triceps_corda")
-            ]
-        )
-        try? FormaDataStore.shared.insertWorkoutRoutine(routinePeito)
-
-        let routinePernas = WorkoutRoutine(
-            title: "Pernas Completo - Foco Quadríceps",
-            workoutType: .bodybuilding,
-            targetMuscles: "Quadríceps, Glúteos, Posteriores",
-            hypertrophyFocus: "Alto estresse metabólico e sobrecarga progressiva com alta intensidade",
-            estimatedDurationMinutes: 60,
-            estimatedCalories: 450,
-            recommendedRestSeconds: 120,
-            isFavorite: true,
-            exercises: [
-                WorkoutExerciseItem(name: "Agachamento Livre com Barra", sets: 4, reps: "8-10", suggestedWeight: "40kg/lado", targetMuscle: "Quadríceps & Glúteos", executionTip: "Profundidade abaixo de 90 graus mantendo a coluna neutra", restSeconds: 120, animationId: "agachamento_livre"),
-                WorkoutExerciseItem(name: "Leg Press 45°", sets: 4, reps: "10-12", suggestedWeight: "200kg total", targetMuscle: "Quadríceps", executionTip: "Pés na largura dos ombros, não hiperestenda os joelhos no topo", restSeconds: 90, animationId: "leg_press"),
-                WorkoutExerciseItem(name: "Cadeira Extensora", sets: 3, reps: "12-15", suggestedWeight: "50kg", targetMuscle: "Reto Femoral", executionTip: "Segure 1 segundo no pico de contração em cima", restSeconds: 60, animationId: "cadeira_extensora"),
-                WorkoutExerciseItem(name: "Mesa Flexora", sets: 4, reps: "10-12", suggestedWeight: "45kg", targetMuscle: "Isquiotibiais", executionTip: "Controle a volta excêntrica sem levantar o quadril", restSeconds: 60, animationId: "mesa_flexora")
-            ]
-        )
-        try? FormaDataStore.shared.insertWorkoutRoutine(routinePernas)
     }
 }
 

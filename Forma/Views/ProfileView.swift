@@ -394,22 +394,38 @@ struct ProfileView: View {
             if let parsedH = ProfileInputValidator.parseFlexibleHeight(heightInputText) {
                 applyHeightChange(parsedH, profile: profile, syncText: true)
             }
+            let weightChangedTo: Double?
             if let parsedW = ProfileInputValidator.parseFlexibleWeight(weightInputText) {
-                applyWeightChange(parsedW, profile: profile, syncText: true, recordEntry: true)
+                let clamped = max(30.0, min(300.0, (parsedW * 10.0).rounded() / 10.0))
+                let hadDiff = abs(profile.currentWeight - clamped) >= 0.05
+                profile.currentWeight = clamped
+                profile.autoRecalculateGoals = true
+                weightInputText = String(format: "%.1f", clamped)
+                FormaDataStore.shared.recalculateProfileWithFullContext(for: clamped, profile: profile, in: modelContext)
+                weightChangedTo = hadDiff ? clamped : nil
             } else {
-                syncTodayWeightEntry(weight: profile.currentWeight)
+                weightChangedTo = nil
             }
 
             isHeightFocused = false
             isWeightFocused = false
             UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 
-            try? modelContext.save()
-            FormaDataStore.shared.syncTodayData()
-            Task {
-                await syncManager.sync(context: modelContext)
+            Task { @MainActor in
+                do {
+                    if let newW = weightChangedTo {
+                        try await FormaDataStore.shared.createWeightEntryRemoteFirst(
+                            weight: newW,
+                            date: Date(),
+                            notes: "Atualizado nos ajustes"
+                        )
+                    }
+                    try await FormaDataStore.shared.saveProfileRemoteFirst(profile)
+                    showToast("Configurações salvas no banco e sincronizadas!")
+                } catch {
+                    showToast("Erro ao sincronizar: \(FormaAPIClient.humanizeErrorMessage(error.localizedDescription))")
+                }
             }
-            showToast("Configurações salvas e sincronizadas!")
         } label: {
             HStack {
                 Image(systemName: "checkmark")
@@ -487,18 +503,14 @@ struct ProfileView: View {
     }
 
     private func syncTodayWeightEntry(weight: Double) {
-        let calendar = Calendar.current
-        if let todayEntry = weightEntries.first(where: { calendar.isDateInToday($0.date) }) {
-            if abs(todayEntry.weight - weight) >= 0.05 {
-                todayEntry.weight = weight
-            }
-        } else {
-            let latestWeight = weightEntries.first?.weight
-            if latestWeight == nil || abs((latestWeight ?? 0) - weight) >= 0.05 {
-                let entry = WeightEntry(weight: weight, date: Date(), notes: "Atualizado nos ajustes")
-                modelContext.insert(entry)
-                AppActivityLogManager.shared.logWeight(id: entry.id.uuidString, weightKg: weight, date: entry.date, notes: entry.notes)
-            }
+        let latestWeight = weightEntries.first?.weight
+        guard latestWeight == nil || abs((latestWeight ?? 0) - weight) >= 0.05 else { return }
+        Task { @MainActor in
+            try? await FormaDataStore.shared.createWeightEntryRemoteFirst(
+                weight: weight,
+                date: Date(),
+                notes: "Atualizado nos ajustes"
+            )
         }
     }
 

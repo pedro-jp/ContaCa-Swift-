@@ -483,10 +483,9 @@ struct EvolutionView: View {
                 )
                 await MainActor.run {
                     self.aiAnalysis = result
-                    EvolutionAnalysisStore.shared.save(result)
                     self.isAnalyzingAI = false
-                    Task {
-                        await BackendSyncManager.shared.sync(context: modelContext)
+                    Task { @MainActor in
+                        try? await FormaDataStore.shared.saveEvolutionAnalysisRemoteFirst(result)
                     }
                 }
             } catch {
@@ -506,19 +505,22 @@ struct EvolutionView: View {
         p.targetFat = targets.fatGrams
         p.targetWaterMilliliters = targets.waterMilliliters
 
-        try? modelContext.save()
-        FormaDataStore.shared.syncTodayData()
-
-        withAnimation(.spring(duration: 0.35)) {
-            appliedTargetsSuccessfully = true
-            toastMessage = "Metas de \(Int(targets.dailyCalories)) kcal e macros aplicadas ao perfil!"
-        }
-
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-            withAnimation { toastMessage = nil }
+        Task { @MainActor in
+            do {
+                try await FormaDataStore.shared.saveProfileRemoteFirst(p)
+                withAnimation(.spring(duration: 0.35)) {
+                    appliedTargetsSuccessfully = true
+                    toastMessage = "Metas de \(Int(targets.dailyCalories)) kcal e macros aplicadas e salvas no banco!"
+                }
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.success)
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                withAnimation { toastMessage = nil }
+            } catch {
+                withAnimation {
+                    toastMessage = "Erro ao sincronizar metas: \(FormaAPIClient.humanizeErrorMessage(error.localizedDescription))"
+                }
+            }
         }
     }
 
@@ -535,18 +537,22 @@ struct EvolutionView: View {
             notes: "✨ Gerado pela Inteligência Forma"
         )
 
-        try? FormaDataStore.shared.insertWorkoutRoutine(newRoutine)
-
-        withAnimation(.spring(duration: 0.35)) {
-            savedRoutineSuccessfully = true
-            toastMessage = "Ficha adicionada na aba de Treinos!"
-        }
-
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-            withAnimation { toastMessage = nil }
+        Task { @MainActor in
+            do {
+                try await FormaDataStore.shared.saveWorkoutRoutineRemoteFirst(newRoutine)
+                withAnimation(.spring(duration: 0.35)) {
+                    savedRoutineSuccessfully = true
+                    toastMessage = "Ficha salva no banco e adicionada na aba de Treinos!"
+                }
+                let generator = UINotificationFeedbackGenerator()
+                generator.notificationOccurred(.success)
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                withAnimation { toastMessage = nil }
+            } catch {
+                withAnimation {
+                    toastMessage = "Erro ao sincronizar ficha: \(FormaAPIClient.humanizeErrorMessage(error.localizedDescription))"
+                }
+            }
         }
     }
 }
