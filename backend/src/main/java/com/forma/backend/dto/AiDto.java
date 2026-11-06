@@ -34,4 +34,13 @@ public class AiDto {
         String activityLogJson,
         String userName
     ) {}
+
+    public record InitialGoalsAiRequest(
+        String userName,
+        String goal,
+        Double currentWeight,
+        Double heightMeters,
+        Double targetWeight,
+        String activityLevel
+    ) {}
 }

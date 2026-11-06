@@ -135,6 +135,206 @@ public class GeminiAiProxyService {
         );
     }
 
+    public String suggestInitialGoals(UUID userId, AiDto.InitialGoalsAiRequest request) {
+        if (request == null || request.currentWeight() == null || request.currentWeight() <= 20.0
+            || request.heightMeters() == null || request.heightMeters() < 0.8) {
+            throw new IllegalArgumentException("Informe peso atual e altura válidos para sugerir as metas.");
+        }
+        long startTime = System.currentTimeMillis();
+        String userName = sanitizeUserName(request.userName());
+        String goal = (request.goal() != null && !request.goal().isBlank()) ? request.goal().trim() : "Ganhar peso";
+        double weight = request.currentWeight();
+        double heightM = request.heightMeters() > 3.0 ? request.heightMeters() / 100.0 : request.heightMeters();
+        String activity = (request.activityLevel() != null && !request.activityLevel().isBlank())
+            ? request.activityLevel().trim()
+            : "Moderado (3-4x/semana)";
+
+        Map<String, Object> baseline = computePhysiologicalInitialTargets(userName, goal, weight, heightM, request.targetWeight(), activity);
+
+        try {
+            if (!appConfigService.isAiBlocked()) {
+                String prompt = buildInitialGoalsPrompt(userName, goal, weight, heightM, request.targetWeight(), activity, baseline);
+                String result = callGeminiWithFailover(prompt, null, null);
+                if (result != null && !result.isBlank()) {
+                    JsonNode node = objectMapper.readTree(result);
+                    if (node.has("daily_calories") && node.path("daily_calories").asDouble(0) >= 1000) {
+                        long duration = System.currentTimeMillis() - startTime;
+                        logAiRequest(userId, "/api/ai/suggest-initial-goals", "Onboarding " + userName + " (" + goal + ")", "SUCCESS", duration);
+                        return result;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            logAiRequest(userId, "/api/ai/suggest-initial-goals", "Onboarding fallback (" + e.getMessage() + ")", "FALLBACK_LOCAL", duration);
+        }
+
+        try {
+            return objectMapper.writeValueAsString(baseline);
+        } catch (Exception e) {
+            throw new RuntimeException("Falha ao calcular sugestão inicial de metas.");
+        }
+    }
+
+    private Map<String, Object> computePhysiologicalInitialTargets(
+        String userName,
+        String goal,
+        double weight,
+        double heightM,
+        Double userTargetWeight,
+        String activityLevel
+    ) {
+        double heightCm = heightM * 100.0;
+        double tmb = (10.0 * weight) + (6.25 * heightCm) - (5.0 * 26.0) + 5.0;
+
+        String lowerAct = activityLevel.toLowerCase();
+        double activityFactor;
+        double targetBurn;
+        double targetSteps;
+        if (lowerAct.contains("intenso") || lowerAct.contains("5") || lowerAct.contains("6") || lowerAct.contains("atleta")) {
+            activityFactor = 1.62;
+            targetBurn = 650.0;
+            targetSteps = 10000.0;
+        } else if (lowerAct.contains("sedent") || lowerAct.contains("leve") || lowerAct.contains("1") || lowerAct.contains("2")) {
+            activityFactor = 1.35;
+            targetBurn = 350.0;
+            targetSteps = 7000.0;
+        } else {
+            activityFactor = 1.48;
+            targetBurn = 500.0;
+            targetSteps = 8500.0;
+        }
+
+        double tdee = tmb * activityFactor;
+        String lowerGoal = goal.toLowerCase();
+        boolean isLose = lowerGoal.contains("perd") || lowerGoal.contains("lose") || lowerGoal.contains("emagrec") || lowerGoal.contains("sec");
+        boolean isMaintain = lowerGoal.contains("mant") || lowerGoal.contains("maintain");
+
+        double suggestedTargetWeight;
+        if (userTargetWeight != null && userTargetWeight >= 30.0) {
+            suggestedTargetWeight = Math.round(userTargetWeight * 10.0) / 10.0;
+        } else {
+            double idealBmiWeight = 22.5 * heightM * heightM;
+            if (isLose) {
+                suggestedTargetWeight = Math.round(Math.max(45.0, Math.min(weight - 4.0, idealBmiWeight)) * 10.0) / 10.0;
+            } else if (isMaintain) {
+                suggestedTargetWeight = Math.round(weight * 10.0) / 10.0;
+            } else {
+                suggestedTargetWeight = Math.round(Math.max(weight + 5.0, idealBmiWeight) * 10.0) / 10.0;
+            }
+        }
+
+        double dailyCalories;
+        double proteinPerKg;
+        double fatPerKg;
+        String strategyLabel;
+        if (isLose) {
+            dailyCalories = Math.max(1350.0, Math.round((tdee - 450.0) / 10.0) * 10.0);
+            proteinPerKg = 2.1;
+            fatPerKg = 0.85;
+            strategyLabel = "déficit calórico controlado com alta proteção de massa magra";
+        } else if (isMaintain) {
+            dailyCalories = Math.max(1500.0, Math.round(tdee / 10.0) * 10.0);
+            proteinPerKg = 1.9;
+            fatPerKg = 0.95;
+            strategyLabel = "equilíbrio energético para recomposição corporal e performance";
+        } else {
+            dailyCalories = Math.max(1800.0, Math.round((tdee + 380.0) / 10.0) * 10.0);
+            proteinPerKg = 2.0;
+            fatPerKg = 1.0;
+            strategyLabel = "superávit calórico limpo focado em hipertrofia muscular";
+        }
+
+        double proteinGrams = Math.round(weight * proteinPerKg);
+        double fatGrams = Math.round(weight * fatPerKg);
+        double remainingKcal = Math.max(240.0, dailyCalories - (proteinGrams * 4.0) - (fatGrams * 9.0));
+        double carbsGrams = Math.round(remainingKcal / 4.0);
+        int waterMl = (int) (Math.round((weight * 38.0) / 100.0) * 100);
+        waterMl = Math.max(2000, Math.min(5000, waterMl));
+
+        String explanation = String.format(
+            Locale.forLanguageTag("pt-BR"),
+            "%s, calculamos sua Taxa Basal (~%.0f kcal) e gasto diário (~%.0f kcal) para %.1f kg e %.2f m, aplicando %s rumo aos %.1f kg.",
+            userName, tmb, tdee, weight, heightM, strategyLabel, suggestedTargetWeight
+        );
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("suggested_target_weight", suggestedTargetWeight);
+        result.put("daily_calories", dailyCalories);
+        result.put("protein_grams", proteinGrams);
+        result.put("carbs_grams", carbsGrams);
+        result.put("fat_grams", fatGrams);
+        result.put("water_milliliters", waterMl);
+        result.put("target_calorie_burn", targetBurn);
+        result.put("target_steps", targetSteps);
+        result.put("explanation", explanation);
+        return result;
+    }
+
+    private static String buildInitialGoalsPrompt(
+        String userName,
+        String goal,
+        double weight,
+        double heightM,
+        Double userTargetWeight,
+        String activityLevel,
+        Map<String, Object> baseline
+    ) {
+        String targetWeightText = (userTargetWeight != null && userTargetWeight >= 30.0)
+            ? String.format(Locale.US, "%.1f kg (definido pelo usuário, mantenha este valor em suggested_target_weight)", userTargetWeight)
+            : String.format(Locale.US, "não informado (sugira um peso-alvo saudável e realista próximo de %s kg)", baseline.get("suggested_target_weight"));
+
+        return """
+        Você é o nutricionista esportivo e fisiologista chefe da Inteligência Forma.
+        O(A) usuário(a) %s acabou de criar sua conta no app Forma e está preenchendo a configuração inicial obrigatória.
+        
+        DADOS BIOMÉTRICOS DO ATLETA:
+        - Nome: %s
+        - Objetivo principal: %s
+        - Peso atual: %.1f kg
+        - Altura: %.2f m
+        - Peso meta: %s
+        - Nível de atividade física: %s
+        
+        REFERÊNCIA FISIOLÓGICA BASE (Mifflin-St Jeor + nível de atividade):
+        - Calorias sugeridas base: %s kcal/dia
+        - Proteínas base: %s g | Carboidratos base: %s g | Gorduras base: %s g
+        - Água diária base: %s ml | Queima ativa em treino: %s kcal | Passos: %s
+        
+        Calcule metas diárias personalizadas, realistas e coerentes (a soma 4*proteína + 4*carboidratos + 9*gorduras deve bater com daily_calories).
+        Escreva em `explanation` uma mensagem acolhedora e objetiva (máximo 2 frases curtas em português) dirigida a %s explicando a estratégia adotada pela Inteligência Forma.
+        
+        Responda ESTRITAMENTE em JSON válido com estas chaves exatas:
+        {
+          "suggested_target_weight": 78.0,
+          "daily_calories": 2750.0,
+          "protein_grams": 145.0,
+          "carbs_grams": 355.0,
+          "fat_grams": 75.0,
+          "water_milliliters": 2800,
+          "target_calorie_burn": 500.0,
+          "target_steps": 8500.0,
+          "explanation": "Explicação curta e motivadora em até 2 frases."
+        }
+        """.formatted(
+            userName,
+            userName,
+            goal,
+            weight,
+            heightM,
+            targetWeightText,
+            activityLevel,
+            baseline.get("daily_calories"),
+            baseline.get("protein_grams"),
+            baseline.get("carbs_grams"),
+            baseline.get("fat_grams"),
+            baseline.get("water_milliliters"),
+            baseline.get("target_calorie_burn"),
+            baseline.get("target_steps"),
+            userName
+        );
+    }
+
     private String executeAndLog(
         UUID userId,
         String endpoint,

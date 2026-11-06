@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -65,6 +66,223 @@ public class SyncService {
         upsertAnalyses(userId, request.analyses());
         upsertActivityLogs(userId, request.activityLogs());
 
+        user.setLastSyncedAt(Instant.now());
+        userRepository.save(user);
+    }
+
+    @Transactional
+    public Map<String, Object> saveProfileDirect(UUID userId, SyncDto.ProfileWriteRequest req) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado."));
+
+        if (req != null && req.name() != null && !req.name().isBlank()) {
+            user.setName(req.name().trim());
+        }
+
+        UserProfile profile = userProfileRepository.findById(userId)
+            .orElseGet(() -> new UserProfile(userId));
+
+        if (req != null) {
+            if (req.goal() != null && !req.goal().isBlank()) profile.setGoal(req.goal());
+            if (isPositive(req.targetCalorieIntake())) profile.setTargetCalorieIntake(req.targetCalorieIntake());
+            if (isNonNegative(req.targetCalorieBurn())) profile.setTargetCalorieBurn(req.targetCalorieBurn());
+            if (isPositive(req.targetSteps())) profile.setTargetSteps(req.targetSteps());
+            if (isPositive(req.targetWeight())) profile.setTargetWeight(req.targetWeight());
+            if (isNonNegative(req.targetProtein())) profile.setTargetProtein(req.targetProtein());
+            if (isNonNegative(req.targetCarbohydrates())) profile.setTargetCarbohydrates(req.targetCarbohydrates());
+            if (isNonNegative(req.targetFat())) profile.setTargetFat(req.targetFat());
+            if (req.targetWaterMilliliters() != null && req.targetWaterMilliliters() > 0) {
+                profile.setTargetWaterMilliliters(req.targetWaterMilliliters());
+            }
+            if (isPositive(req.heightMeters())) profile.setHeightMeters(req.heightMeters());
+            if (isPositive(req.currentWeight())) profile.setCurrentWeight(req.currentWeight());
+            if (req.onboardingCompleted() != null) profile.setOnboardingCompleted(req.onboardingCompleted());
+        }
+        profile.setUpdatedAt(Instant.now());
+        UserProfile savedProfile = userProfileRepository.save(profile);
+
+        user.setLastSyncedAt(Instant.now());
+        User savedUser = userRepository.save(user);
+
+        return Map.of(
+            "status", "saved",
+            "name", savedUser.getName() != null ? savedUser.getName() : "",
+            "profile", SyncDto.ProfileDto.fromEntity(savedProfile)
+        );
+    }
+
+    @Transactional
+    public List<SyncDto.FoodDto> saveFoodsDirect(UUID userId, SyncDto.FoodBatchWriteRequest req) {
+        if (req == null || req.foods() == null || req.foods().isEmpty()) {
+            return List.of();
+        }
+        touchUserSyncTimestamp(userId);
+        upsertFoods(userId, req.foods());
+        upsertActivityLogs(userId, req.activityLogs());
+        List<UUID> ids = req.foods().stream().map(SyncDto.FoodDto::id).filter(java.util.Objects::nonNull).toList();
+        return foodEntryRepository.findAllById(ids).stream()
+            .filter(e -> userId.equals(e.getUserId()))
+            .map(SyncDto.FoodDto::fromEntity)
+            .toList();
+    }
+
+    @Transactional
+    public void deleteFoodDirect(UUID userId, UUID foodId) {
+        if (foodId == null) return;
+        deleteFoodsBatchDirect(userId, List.of(foodId));
+    }
+
+    @Transactional
+    public void deleteFoodsBatchDirect(UUID userId, List<UUID> foodIds) {
+        if (foodIds == null || foodIds.isEmpty()) return;
+        touchUserSyncTimestamp(userId);
+        for (UUID id : foodIds) {
+            if (id == null) continue;
+            foodEntryRepository.findById(id).ifPresent(entity -> {
+                if (userId.equals(entity.getUserId())) {
+                    foodEntryRepository.delete(entity);
+                    deleteOwnedActivityLog(userId, id.toString());
+                }
+            });
+        }
+    }
+
+    @Transactional
+    public SyncDto.WorkoutDto saveWorkoutDirect(UUID userId, SyncDto.WorkoutWriteRequest req) {
+        if (req == null || req.workout() == null || req.workout().id() == null) {
+            throw new IllegalArgumentException("Dados do treino inválidos.");
+        }
+        touchUserSyncTimestamp(userId);
+        upsertWorkouts(userId, List.of(req.workout()));
+        if (req.activityLog() != null) {
+            upsertActivityLogs(userId, List.of(req.activityLog()));
+        }
+        if (req.updatedRoutine() != null) {
+            upsertRoutines(userId, List.of(req.updatedRoutine()));
+        }
+        return workoutEntryRepository.findById(req.workout().id())
+            .filter(e -> userId.equals(e.getUserId()))
+            .map(SyncDto.WorkoutDto::fromEntity)
+            .orElse(req.workout());
+    }
+
+    @Transactional
+    public void deleteWorkoutDirect(UUID userId, UUID workoutId) {
+        if (workoutId == null) return;
+        touchUserSyncTimestamp(userId);
+        workoutEntryRepository.findById(workoutId).ifPresent(entity -> {
+            if (userId.equals(entity.getUserId())) {
+                workoutEntryRepository.delete(entity);
+                deleteOwnedActivityLog(userId, workoutId.toString());
+            }
+        });
+    }
+
+    @Transactional
+    public SyncDto.RoutineDto saveRoutineDirect(UUID userId, SyncDto.RoutineDto routine) {
+        if (routine == null || routine.id() == null) {
+            throw new IllegalArgumentException("Dados da ficha inválidos.");
+        }
+        touchUserSyncTimestamp(userId);
+        upsertRoutines(userId, List.of(routine));
+        return workoutRoutineRepository.findById(routine.id())
+            .filter(e -> userId.equals(e.getUserId()))
+            .map(SyncDto.RoutineDto::fromEntity)
+            .orElse(routine);
+    }
+
+    @Transactional
+    public void deleteRoutineDirect(UUID userId, UUID routineId) {
+        if (routineId == null) return;
+        touchUserSyncTimestamp(userId);
+        workoutRoutineRepository.findById(routineId).ifPresent(entity -> {
+            if (userId.equals(entity.getUserId())) {
+                workoutRoutineRepository.delete(entity);
+            }
+        });
+    }
+
+    @Transactional
+    public SyncDto.WaterDto saveWaterDirect(UUID userId, SyncDto.WaterWriteRequest req) {
+        if (req == null || req.water() == null || req.water().id() == null) {
+            throw new IllegalArgumentException("Dados de hidratação inválidos.");
+        }
+        touchUserSyncTimestamp(userId);
+        upsertWaters(userId, List.of(req.water()));
+        if (req.activityLog() != null) {
+            upsertActivityLogs(userId, List.of(req.activityLog()));
+        }
+        return waterEntryRepository.findById(req.water().id())
+            .filter(e -> userId.equals(e.getUserId()))
+            .map(SyncDto.WaterDto::fromEntity)
+            .orElse(req.water());
+    }
+
+    @Transactional
+    public void deleteWaterDirect(UUID userId, UUID waterId) {
+        if (waterId == null) return;
+        touchUserSyncTimestamp(userId);
+        waterEntryRepository.findById(waterId).ifPresent(entity -> {
+            if (userId.equals(entity.getUserId())) {
+                waterEntryRepository.delete(entity);
+                deleteOwnedActivityLog(userId, waterId.toString());
+            }
+        });
+    }
+
+    @Transactional
+    public SyncDto.WeightDto saveWeightDirect(UUID userId, SyncDto.WeightWriteRequest req) {
+        if (req == null || req.weight() == null || req.weight().id() == null) {
+            throw new IllegalArgumentException("Dados de pesagem inválidos.");
+        }
+        touchUserSyncTimestamp(userId);
+        upsertWeights(userId, List.of(req.weight()));
+        if (req.activityLog() != null) {
+            upsertActivityLogs(userId, List.of(req.activityLog()));
+        }
+        if (req.profileUpdate() != null) {
+            saveProfileDirect(userId, req.profileUpdate());
+        } else if (isPositive(req.weight().weight())) {
+            UserProfile profile = userProfileRepository.findById(userId)
+                .orElseGet(() -> new UserProfile(userId));
+            profile.setCurrentWeight(req.weight().weight());
+            profile.setUpdatedAt(Instant.now());
+            userProfileRepository.save(profile);
+        }
+        return weightEntryRepository.findById(req.weight().id())
+            .filter(e -> userId.equals(e.getUserId()))
+            .map(SyncDto.WeightDto::fromEntity)
+            .orElse(req.weight());
+    }
+
+    @Transactional
+    public void deleteWeightDirect(UUID userId, UUID weightId) {
+        if (weightId == null) return;
+        touchUserSyncTimestamp(userId);
+        weightEntryRepository.findById(weightId).ifPresent(entity -> {
+            if (userId.equals(entity.getUserId())) {
+                weightEntryRepository.delete(entity);
+                deleteOwnedActivityLog(userId, weightId.toString());
+            }
+        });
+    }
+
+    @Transactional
+    public SyncDto.AiAnalysisDto saveAnalysisDirect(UUID userId, SyncDto.AiAnalysisDto dto) {
+        if (dto == null || dto.id() == null) {
+            throw new IllegalArgumentException("Dados da análise inválidos.");
+        }
+        touchUserSyncTimestamp(userId);
+        upsertAnalyses(userId, List.of(dto));
+        return aiAnalysisRepository.findById(dto.id())
+            .filter(e -> userId.equals(e.getUserId()))
+            .map(SyncDto.AiAnalysisDto::fromEntity)
+            .orElse(dto);
+    }
+
+    private void touchUserSyncTimestamp(UUID userId) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado."));
         user.setLastSyncedAt(Instant.now());
         userRepository.save(user);
     }
@@ -182,6 +400,7 @@ public class SyncService {
         }
         if (isPositive(p.heightMeters())) profile.setHeightMeters(p.heightMeters());
         if (isPositive(p.currentWeight())) profile.setCurrentWeight(p.currentWeight());
+        if (p.onboardingCompleted() != null) profile.setOnboardingCompleted(p.onboardingCompleted());
         profile.setUpdatedAt(Instant.now());
         userProfileRepository.save(profile);
     }

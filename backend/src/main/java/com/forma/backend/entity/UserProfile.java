@@ -23,6 +23,9 @@ public class UserProfile {
     private Double heightMeters = 1.78;
     private Double currentWeight = 72.0;
 
+    @Column(name = "onboarding_completed")
+    private Boolean onboardingCompleted = false;
+
     @Column(name = "updated_at")
     private Instant updatedAt = Instant.now();
 
@@ -30,6 +33,7 @@ public class UserProfile {
 
     public UserProfile(UUID userId) {
         this.userId = userId;
+        this.onboardingCompleted = false;
         this.updatedAt = Instant.now();
     }
 
@@ -68,6 +72,9 @@ public class UserProfile {
 
     public Double getCurrentWeight() { return currentWeight; }
     public void setCurrentWeight(Double currentWeight) { this.currentWeight = currentWeight; }
+
+    public Boolean getOnboardingCompleted() { return Boolean.TRUE.equals(onboardingCompleted); }
+    public void setOnboardingCompleted(Boolean onboardingCompleted) { this.onboardingCompleted = onboardingCompleted; }
 
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }

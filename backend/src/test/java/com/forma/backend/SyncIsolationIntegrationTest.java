@@ -250,4 +250,93 @@ class SyncIsolationIntegrationTest {
             .andExpect(jsonPath("$.foods").isEmpty())
             .andExpect(jsonPath("$.workouts").isEmpty());
     }
+
+    @Test
+    @DisplayName("Conta nova inicia com onboardingCompleted=false, zero treinos/refeições e endpoints remote-first + IA inicial funcionam")
+    void shouldEnforceOnboardingFalseForNewUserAndSupportRemoteFirstEndpoints() throws Exception {
+        AuthDto.AuthResponse newUser = registerTestUser("novaconta@forma.app", "Nova Atleta");
+        assertThat(newUser.profile().onboardingCompleted()).isFalse();
+
+        // Pull inicial de conta recém-criada deve estar 100% zerado (sem treinos ou rotinas de terceiros)
+        mockMvc.perform(get("/api/sync/pull")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + newUser.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.profile.onboardingCompleted").value(false))
+            .andExpect(jsonPath("$.foods").isEmpty())
+            .andExpect(jsonPath("$.workouts").isEmpty())
+            .andExpect(jsonPath("$.routines").isEmpty())
+            .andExpect(jsonPath("$.waters").isEmpty())
+            .andExpect(jsonPath("$.weights").isEmpty());
+
+        // Sugestão inicial de metas via endpoint /api/ai/suggest-initial-goals (com fallback fisiológico)
+        mockMvc.perform(post("/api/ai/suggest-initial-goals")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + newUser.token())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"userName":"Nova Atleta","goal":"Perder peso","currentWeight":78.0,"heightMeters":1.68,"activityLevel":"Moderado (3-4x/semana)"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.daily_calories").isNumber())
+            .andExpect(jsonPath("$.protein_grams").isNumber())
+            .andExpect(jsonPath("$.carbs_grams").isNumber())
+            .andExpect(jsonPath("$.fat_grams").isNumber())
+            .andExpect(jsonPath("$.water_milliliters").isNumber())
+            .andExpect(jsonPath("$.suggested_target_weight").isNumber())
+            .andExpect(jsonPath("$.explanation").isString());
+
+        // Conclusão do onboarding via PUT /api/sync/profile grava direto no banco primeiro
+        SyncDto.ProfileWriteRequest onboardingWrite = new SyncDto.ProfileWriteRequest(
+            "Nova Atleta",
+            "Perder peso",
+            1950.0,
+            500.0,
+            8500.0,
+            68.0,
+            156.0,
+            190.0,
+            62.0,
+            2900,
+            1.68,
+            78.0,
+            true
+        );
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/sync/profile")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + newUser.token())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(onboardingWrite)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("saved"))
+            .andExpect(jsonPath("$.profile.onboardingCompleted").value(true))
+            .andExpect(jsonPath("$.profile.currentWeight").value(78.0))
+            .andExpect(jsonPath("$.profile.targetWeight").value(68.0));
+
+        // Gravação direta de treino via POST /api/sync/workouts
+        UUID directWorkoutId = UUID.randomUUID();
+        SyncDto.WorkoutWriteRequest workoutWrite = new SyncDto.WorkoutWriteRequest(
+            new SyncDto.WorkoutDto(directWorkoutId, "Funcional Matinal", "Funcional / HIIT", 35, 290.0, "HIIT", Instant.now()),
+            null,
+            null
+        );
+
+        mockMvc.perform(post("/api/sync/workouts")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + newUser.token())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(workoutWrite)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("saved"))
+            .andExpect(jsonPath("$.workout.id").value(directWorkoutId.toString()));
+
+        // Remoção direta via DELETE /api/sync/workouts/{id}
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/sync/workouts/" + directWorkoutId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + newUser.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("deleted"));
+
+        mockMvc.perform(get("/api/sync/pull")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + newUser.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.profile.onboardingCompleted").value(true))
+            .andExpect(jsonPath("$.workouts").isEmpty());
+    }
 }

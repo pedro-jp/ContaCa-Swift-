@@ -4,15 +4,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.io.File;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -27,10 +32,19 @@ public class FormaBackendApplication {
     private static final Logger log = LoggerFactory.getLogger(FormaBackendApplication.class);
 
     public static void main(String[] args) {
+        System.setProperty("java.net.preferIPv4Stack", "true");
         loadDotEnv();
-        Map<String, Object> defaultProps = resolveSupabaseJdbcConnection();
+        Map<String, Object> resolvedDbProps = resolveSupabaseJdbcConnection();
+
         SpringApplication app = new SpringApplication(FormaBackendApplication.class);
-        app.setDefaultProperties(defaultProps);
+        app.addInitializers(context -> {
+            ConfigurableEnvironment env = context.getEnvironment();
+            if (Arrays.asList(env.getActiveProfiles()).contains("test")) {
+                return;
+            }
+            // Prioridade máxima sobre System.getenv(SUPABASE_DB_URL) e application.yml
+            env.getPropertySources().addFirst(new MapPropertySource("formaResolvedDatabase", resolvedDbProps));
+        });
         app.run(args);
     }
 
@@ -95,10 +109,15 @@ public class FormaBackendApplication {
         }
         if (configuredDbUrl != null && !configuredDbUrl.isBlank()) {
             int dbIdx = configuredDbUrl.indexOf("//db.");
+            if (dbIdx < 0) {
+                int atDbIdx = configuredDbUrl.indexOf("@db.");
+                if (atDbIdx >= 0) dbIdx = atDbIdx - 1;
+            }
             if (dbIdx >= 0) {
-                int endIdx = configuredDbUrl.indexOf(".supabase.co", dbIdx);
-                if (endIdx > dbIdx + 5) {
-                    return configuredDbUrl.substring(dbIdx + 5, endIdx);
+                int start = configuredDbUrl.indexOf("db.", dbIdx) + 3;
+                int endIdx = configuredDbUrl.indexOf(".supabase.co", start);
+                if (endIdx > start) {
+                    return configuredDbUrl.substring(start, endIdx);
                 }
             }
             int userIdx = configuredDbUrl.indexOf("postgres.");
@@ -116,30 +135,40 @@ public class FormaBackendApplication {
         return null;
     }
 
-    private record JdbcCandidate(String url, String user, String label) {}
+    private record JdbcCandidate(String url, String user, String label, int timeoutSeconds) {}
 
     /**
-     * Valida e resolve automaticamente a região/host PostgreSQL do Supabase a partir de
+     * Valida e resolve automaticamente a conexão PostgreSQL do Supabase a partir de
      * SUPABASE_DB_URL ou SUPABASE_URL + SUPABASE_DB_PASSWORD. Prioriza o Pooler IPv4
-     * (compatível com Render/Docker) antes do host direto IPv6. Caso a senha ou rede
-     * falhem, faz fallback seguro para o banco H2 local sem derrubar o servidor.
+     * (compatível com Render/Docker) e injeta o resultado com precedência máxima no Spring.
      */
     private static Map<String, Object> resolveSupabaseJdbcConnection() {
         String dbPassword = getEnvOrProperty("SUPABASE_DB_PASSWORD");
         String configuredUrl = getEnvOrProperty("SUPABASE_DB_URL");
         String configuredUser = getEnvOrProperty("SUPABASE_DB_USER");
         String supabaseUrl = getEnvOrProperty("SUPABASE_URL");
-        String projectRef = extractProjectRef(supabaseUrl, configuredUrl);
+
+        if (configuredUrl != null && configuredUrl.startsWith("postgresql://")) {
+            configuredUrl = "jdbc:" + configuredUrl;
+        }
 
         if (configuredUrl != null && configuredUrl.contains("?")) {
             for (String param : configuredUrl.substring(configuredUrl.indexOf('?') + 1).split("&")) {
                 if (param.startsWith("password=") && (dbPassword == null || dbPassword.isBlank())) {
-                    dbPassword = param.substring("password=".length());
+                    String rawPwd = param.substring("password=".length());
+                    dbPassword = rawPwd.contains("%")
+                        ? URLDecoder.decode(rawPwd, StandardCharsets.UTF_8)
+                        : rawPwd;
                 } else if (param.startsWith("user=") && (configuredUser == null || configuredUser.isBlank())) {
-                    configuredUser = param.substring("user=".length());
+                    String rawUsr = param.substring("user=".length());
+                    configuredUser = rawUsr.contains("%")
+                        ? URLDecoder.decode(rawUsr, StandardCharsets.UTF_8)
+                        : rawUsr;
                 }
             }
         }
+
+        String projectRef = extractProjectRef(supabaseUrl, configuredUrl);
 
         if (dbPassword == null || dbPassword.isBlank()) {
             log.info("[Database] SUPABASE_DB_PASSWORD não configurado. Usando banco local H2 (./forma_local_db).");
@@ -156,21 +185,33 @@ public class FormaBackendApplication {
         List<JdbcCandidate> candidates = new ArrayList<>();
         Set<String> seenUrls = new LinkedHashSet<>();
 
-        boolean configuredIsDirectIpv6 = configuredUrl != null && configuredUrl.contains("//db.") && configuredUrl.contains(".supabase.co");
+        boolean configuredIsDirectIpv6 = configuredUrl != null
+            && configuredUrl.contains("db.")
+            && configuredUrl.contains(".supabase.co");
 
         if (configuredUrl != null && configuredUrl.startsWith("jdbc:postgresql:") && !configuredIsDirectIpv6) {
             String normalizedUrl = normalizeJdbcUrl(configuredUrl);
             String user = (configuredUser != null && !configuredUser.isBlank())
                 ? configuredUser
                 : (projectRef != null ? "postgres." + projectRef : "postgres");
-            candidates.add(new JdbcCandidate(normalizedUrl, user, "configurado no .env"));
+            candidates.add(new JdbcCandidate(normalizedUrl, user, "configurado no ambiente", 8));
             seenUrls.add(normalizedUrl + "|" + user);
         }
 
         if (projectRef != null && !projectRef.isBlank()) {
             String poolerUser = "postgres." + projectRef;
-            String[] poolerRegions = {
-                "aws-1-ca-central-1",
+            // Região principal verificada (aws-1-ca-central-1) em Session Mode (5432) e Transaction Mode (6543)
+            String[] primaryUrls = {
+                "jdbc:postgresql://aws-1-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require&prepareThreshold=0",
+                "jdbc:postgresql://aws-1-ca-central-1.pooler.supabase.com:6543/postgres?sslmode=require&prepareThreshold=0"
+            };
+            for (String pUrl : primaryUrls) {
+                if (seenUrls.add(pUrl + "|" + poolerUser)) {
+                    candidates.add(new JdbcCandidate(pUrl, poolerUser, "Pooler IPv4 aws-1-ca-central-1", 8));
+                }
+            }
+
+            String[] fallbackRegions = {
                 "aws-0-ca-central-1",
                 "aws-0-sa-east-1",
                 "aws-1-sa-east-1",
@@ -185,26 +226,18 @@ public class FormaBackendApplication {
                 "aws-0-eu-central-1",
                 "aws-1-eu-central-1",
                 "aws-0-eu-west-1",
-                "aws-1-eu-west-1",
-                "aws-0-eu-west-2",
-                "aws-1-eu-west-2"
+                "aws-1-eu-west-1"
             };
-            for (String region : poolerRegions) {
+            for (String region : fallbackRegions) {
                 String url = "jdbc:postgresql://" + region + ".pooler.supabase.com:5432/postgres?sslmode=require&prepareThreshold=0";
-                String key = url + "|" + poolerUser;
-                if (seenUrls.add(key)) {
-                    candidates.add(new JdbcCandidate(url, poolerUser, "Pooler IPv4 " + region));
+                if (seenUrls.add(url + "|" + poolerUser)) {
+                    candidates.add(new JdbcCandidate(url, poolerUser, "Pooler IPv4 " + region, 4));
                 }
-            }
-
-            String directUrl = "jdbc:postgresql://db." + projectRef + ".supabase.co:5432/postgres?sslmode=require&prepareThreshold=0";
-            if (seenUrls.add(directUrl + "|postgres")) {
-                candidates.add(new JdbcCandidate(directUrl, "postgres", "Host direto IPv6 db." + projectRef));
             }
         } else if (configuredIsDirectIpv6) {
             String normalizedUrl = normalizeJdbcUrl(configuredUrl);
             String user = (configuredUser != null && !configuredUser.isBlank()) ? configuredUser : "postgres";
-            candidates.add(new JdbcCandidate(normalizedUrl, user, "configurado no .env"));
+            candidates.add(new JdbcCandidate(normalizedUrl, user, "configurado no ambiente", 6));
         }
 
         String lastError = null;
@@ -212,9 +245,9 @@ public class FormaBackendApplication {
             Properties props = new Properties();
             props.setProperty("user", candidate.user());
             props.setProperty("password", dbPassword);
-            props.setProperty("connectTimeout", "4");
-            props.setProperty("loginTimeout", "4");
-            props.setProperty("socketTimeout", "8");
+            props.setProperty("connectTimeout", String.valueOf(candidate.timeoutSeconds()));
+            props.setProperty("loginTimeout", String.valueOf(candidate.timeoutSeconds()));
+            props.setProperty("socketTimeout", "15");
 
             try (Connection conn = DriverManager.getConnection(candidate.url(), props)) {
                 System.setProperty("SUPABASE_DB_DRIVER", "org.postgresql.Driver");
@@ -223,6 +256,10 @@ public class FormaBackendApplication {
                 System.setProperty("SUPABASE_DB_PASSWORD", dbPassword);
 
                 Map<String, Object> dsProps = new HashMap<>();
+                dsProps.put("SUPABASE_DB_DRIVER", "org.postgresql.Driver");
+                dsProps.put("SUPABASE_DB_URL", candidate.url());
+                dsProps.put("SUPABASE_DB_USER", candidate.user());
+                dsProps.put("SUPABASE_DB_PASSWORD", dbPassword);
                 dsProps.put("spring.datasource.driver-class-name", "org.postgresql.Driver");
                 dsProps.put("spring.datasource.url", candidate.url());
                 dsProps.put("spring.datasource.username", candidate.user());
@@ -284,6 +321,10 @@ public class FormaBackendApplication {
         System.setProperty("SUPABASE_DB_PASSWORD", "");
 
         Map<String, Object> dsProps = new HashMap<>();
+        dsProps.put("SUPABASE_DB_DRIVER", "org.h2.Driver");
+        dsProps.put("SUPABASE_DB_URL", h2Url);
+        dsProps.put("SUPABASE_DB_USER", "sa");
+        dsProps.put("SUPABASE_DB_PASSWORD", "");
         dsProps.put("spring.datasource.driver-class-name", "org.h2.Driver");
         dsProps.put("spring.datasource.url", h2Url);
         dsProps.put("spring.datasource.username", "sa");

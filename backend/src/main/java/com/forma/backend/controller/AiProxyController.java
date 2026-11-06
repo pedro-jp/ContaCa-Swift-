@@ -53,4 +53,15 @@ public class AiProxyController {
         UUID userId = authContextResolver.validateAiAccess(authHeader, fallbackUserId);
         return ResponseEntity.ok(geminiAiProxyService.analyzeEvolution(userId, request));
     }
+
+    @PostMapping(value = "/suggest-initial-goals", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<String> suggestInitialGoals(
+        @RequestHeader(value = "Authorization", required = false) String authHeader,
+        @RequestHeader(value = "X-User-Id", required = false) String fallbackUserId,
+        @RequestBody AiDto.InitialGoalsAiRequest request
+    ) {
+        // Permite cálculo de metas iniciais mesmo se a chave da IA estiver indisponível (fallback fisiológico integrado)
+        UUID userId = authContextResolver.requireActiveUser(authHeader, fallbackUserId).getId();
+        return ResponseEntity.ok(geminiAiProxyService.suggestInitialGoals(userId, request));
+    }
 }

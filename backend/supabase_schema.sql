@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     target_water_milliliters INTEGER DEFAULT 2500,
     height_meters DOUBLE PRECISION DEFAULT 1.78,
     current_weight DOUBLE PRECISION DEFAULT 72.0,
+    onboarding_completed BOOLEAN DEFAULT FALSE,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 

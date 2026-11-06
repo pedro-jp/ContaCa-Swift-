@@ -19,8 +19,38 @@ public class SyncDto {
         Double targetFat,
         Integer targetWaterMilliliters,
         Double heightMeters,
-        Double currentWeight
+        Double currentWeight,
+        Boolean onboardingCompleted
     ) {
+        public ProfileDto(
+            String goal,
+            Double targetCalorieIntake,
+            Double targetCalorieBurn,
+            Double targetSteps,
+            Double targetWeight,
+            Double targetProtein,
+            Double targetCarbohydrates,
+            Double targetFat,
+            Integer targetWaterMilliliters,
+            Double heightMeters,
+            Double currentWeight
+        ) {
+            this(
+                goal,
+                targetCalorieIntake,
+                targetCalorieBurn,
+                targetSteps,
+                targetWeight,
+                targetProtein,
+                targetCarbohydrates,
+                targetFat,
+                targetWaterMilliliters,
+                heightMeters,
+                currentWeight,
+                null
+            );
+        }
+
         public static ProfileDto fromEntity(UserProfile profile) {
             return new ProfileDto(
                 profile.getGoal(),
@@ -33,10 +63,27 @@ public class SyncDto {
                 profile.getTargetFat(),
                 profile.getTargetWaterMilliliters(),
                 profile.getHeightMeters(),
-                profile.getCurrentWeight()
+                profile.getCurrentWeight(),
+                profile.getOnboardingCompleted()
             );
         }
     }
+
+    public record ProfileWriteRequest(
+        String name,
+        String goal,
+        Double targetCalorieIntake,
+        Double targetCalorieBurn,
+        Double targetSteps,
+        Double targetWeight,
+        Double targetProtein,
+        Double targetCarbohydrates,
+        Double targetFat,
+        Integer targetWaterMilliliters,
+        Double heightMeters,
+        Double currentWeight,
+        Boolean onboardingCompleted
+    ) {}
 
     public record FoodDto(
         UUID id,
@@ -66,6 +113,15 @@ public class SyncDto {
         }
     }
 
+    public record FoodBatchWriteRequest(
+        List<FoodDto> foods,
+        List<ActivityLogDto> activityLogs
+    ) {}
+
+    public record BatchDeleteRequest(
+        List<UUID> ids
+    ) {}
+
     public record WorkoutDto(
         UUID id,
         String title,
@@ -88,6 +144,12 @@ public class SyncDto {
         }
     }
 
+    public record WorkoutWriteRequest(
+        WorkoutDto workout,
+        ActivityLogDto activityLog,
+        RoutineDto updatedRoutine
+    ) {}
+
     public record WaterDto(
         UUID id,
         Integer milliliters,
@@ -98,6 +160,11 @@ public class SyncDto {
         }
     }
 
+    public record WaterWriteRequest(
+        WaterDto water,
+        ActivityLogDto activityLog
+    ) {}
+
     public record WeightDto(
         UUID id,
         Double weight,
@@ -107,6 +174,12 @@ public class SyncDto {
             return new WeightDto(wg.getId(), wg.getWeight(), wg.getEntryDate());
         }
     }
+
+    public record WeightWriteRequest(
+        WeightDto weight,
+        ActivityLogDto activityLog,
+        ProfileWriteRequest profileUpdate
+    ) {}
 
     public record RoutineDto(
         UUID id,
