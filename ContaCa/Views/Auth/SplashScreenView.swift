@@ -36,7 +36,7 @@ struct SplashScreenView: View {
             VStack(spacing: 24) {
                 Spacer()
                 
-                // Logo animada do ContaCa
+                // Logo animada do Forma
                 ZStack {
                     Circle()
                         .fill(Color("AccentColor").opacity(0.12))
@@ -72,7 +72,7 @@ struct SplashScreenView: View {
                 
                 // Tipografia e Slogan
                 VStack(spacing: 8) {
-                    Text("ContaCa")
+                    Text("Forma")
                         .font(.system(size: 38, weight: .heavy, design: .rounded))
                         .foregroundStyle(Color("FontNormal"))
                     

@@ -183,7 +183,7 @@ struct LockScreenLiveActivityView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "flame.fill")
                         .foregroundColor(accentColor)
-                    Text("ContaCa")
+                    Text("Forma")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.white)
                 }

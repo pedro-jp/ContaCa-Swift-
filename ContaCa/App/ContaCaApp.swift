@@ -43,6 +43,7 @@ struct ContaCaApp: App {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 ContaCaDataStore.shared.syncTodayData()
+                ContaCaDataStore.shared.syncExternalHealthWorkoutsInBackground()
                 checkPendingWorkout()
                 cleanupLegacyCalorieLiveActivities()
                 triggerSync()
@@ -50,6 +51,7 @@ struct ContaCaApp: App {
             .task {
                 cleanupLegacyCalorieLiveActivities()
                 WorkoutNotificationManager.shared.setup()
+                ContaCaDataStore.shared.setupBackgroundHealthObserver()
                 ContaCaDataStore.shared.syncTodayData()
                 checkPendingWorkout()
                 triggerSync()

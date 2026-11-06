@@ -100,6 +100,27 @@ public final class AppActivityLogManager: @unchecked Sendable {
         }
     }
     
+    /// Limpa completamente o histórico de logs de atividades locais (usado no logout / troca de conta)
+    public func clearAll() {
+        queue.sync {
+            self.writeRecords([])
+        }
+    }
+
+    /// Remove registros específicos pelo ID (ex: ao excluir refeição, treino ou pesagem)
+    public func removeRecords(ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let normalizedIds = Set(ids.map { $0.lowercased() })
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            let current = self.readAllRecords()
+            let filtered = current.filter { !normalizedIds.contains($0.id.lowercased()) }
+            if filtered.count != current.count {
+                self.writeRecords(filtered)
+            }
+        }
+    }
+    
     public func mergeRemoteRecords(_ remoteRecords: [ActivityLogRecord]) {
         guard !remoteRecords.isEmpty else { return }
         queue.async { [weak self] in
@@ -155,6 +176,7 @@ public final class AppActivityLogManager: @unchecked Sendable {
     }
     
     public func logMeal(
+        id: String = UUID().uuidString,
         name: String,
         mealType: String,
         calories: Double,
@@ -165,6 +187,7 @@ public final class AppActivityLogManager: @unchecked Sendable {
         date: Date = Date()
     ) {
         let record = ActivityLogRecord(
+            id: id,
             timestamp: date,
             category: "meal",
             title: "\(mealType): \(name)",
@@ -179,6 +202,7 @@ public final class AppActivityLogManager: @unchecked Sendable {
     }
     
     public func logWorkout(
+        id: String = UUID().uuidString,
         title: String,
         workoutType: String,
         durationMinutes: Int,
@@ -187,6 +211,7 @@ public final class AppActivityLogManager: @unchecked Sendable {
         details: String? = nil
     ) {
         let record = ActivityLogRecord(
+            id: id,
             timestamp: date,
             category: "workout",
             title: "\(workoutType): \(title)",
@@ -197,10 +222,12 @@ public final class AppActivityLogManager: @unchecked Sendable {
     }
     
     public func logWater(
+        id: String = UUID().uuidString,
         milliliters: Int,
         date: Date = Date()
     ) {
         let record = ActivityLogRecord(
+            id: id,
             timestamp: date,
             category: "water",
             title: "Ingestão de Água",
@@ -211,11 +238,13 @@ public final class AppActivityLogManager: @unchecked Sendable {
     }
     
     public func logWeight(
+        id: String = UUID().uuidString,
         weightKg: Double,
         date: Date = Date(),
         notes: String? = nil
     ) {
         let record = ActivityLogRecord(
+            id: id,
             timestamp: date,
             category: "weight",
             title: "Pesagem Corporal",

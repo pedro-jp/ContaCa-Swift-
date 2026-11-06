@@ -120,6 +120,10 @@ public class NutritionService {
         
         // Pratos Rápidos & Lanches
         NutritionalFoodItem(name: "Pizza de Muçarela", brand: "Massa", caloriesPer100g: 280, proteinPer100g: 12.0, carbsPer100g: 30.0, fatPer100g: 12.0, sourceTag: "Lanches"),
+        NutritionalFoodItem(name: "Pizza de Calabresa", brand: "Massa", caloriesPer100g: 295, proteinPer100g: 13.0, carbsPer100g: 29.0, fatPer100g: 14.0, sourceTag: "Lanches"),
+        NutritionalFoodItem(name: "Pão de Queijo Assado", brand: "Padaria", caloriesPer100g: 335, proteinPer100g: 6.5, carbsPer100g: 34.2, fatPer100g: 19.0, sourceTag: "TACO Brasil"),
+        NutritionalFoodItem(name: "Presunto Cozido Magro", brand: "Frios", caloriesPer100g: 115, proteinPer100g: 18.0, carbsPer100g: 1.5, fatPer100g: 4.0, sourceTag: "TACO Brasil"),
+        NutritionalFoodItem(name: "Peito de Peru Defumado", brand: "Frios", caloriesPer100g: 104, proteinPer100g: 17.5, carbsPer100g: 1.8, fatPer100g: 2.8, sourceTag: "TACO Brasil"),
         NutritionalFoodItem(name: "Hambúrguer Bovino", brand: "Lanches", caloriesPer100g: 250, proteinPer100g: 17.0, carbsPer100g: 0.0, fatPer100g: 20.0, sourceTag: "Lanches"),
         NutritionalFoodItem(name: "Batata Frita", brand: "Lanches", caloriesPer100g: 312, proteinPer100g: 3.4, carbsPer100g: 41.0, fatPer100g: 15.0, sourceTag: "TACO Brasil"),
         
@@ -160,6 +164,26 @@ public class NutritionService {
         NutritionalFoodItem(name: "Creatina Monohidratada", brand: "Força / ATP", caloriesPer100g: 0, proteinPer100g: 0.0, carbsPer100g: 0.0, fatPer100g: 0.0, sourceTag: "TACO Brasil")
     ]
     
+    /// Normaliza acentos, grafias equivalentes e plurais comuns em português para busca local instantânea
+    private func normalizeToken(_ token: String) -> String {
+        var t = token
+            .folding(options: .diacriticInsensitive, locale: Locale(identifier: "pt-BR"))
+            .lowercased()
+            .replacingOccurrences(of: "mussarela", with: "mucarela")
+        
+        switch t {
+        case "paes": return "pao"
+        case "franceses": return "frances"
+        case "integrais": return "integral"
+        case "naturais": return "natural"
+        default:
+            if t.count > 4 && t.hasSuffix("s") && !t.hasSuffix("ss") && t != "aveias" {
+                t.removeLast()
+            }
+            return t
+        }
+    }
+    
     /// 1. Busca Local Instantânea (0 milissegundos)
     public func searchLocal(query: String) -> [NutritionalFoodItem] {
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -175,10 +199,20 @@ public class NutritionService {
             normalized = clean
         }
         
-        let terms = normalized.components(separatedBy: " ").filter { !$0.isEmpty }
+        let stopTokens: Set<String> = ["de", "da", "do", "com", "cada", "um", "uma"]
+        let terms = normalized
+            .components(separatedBy: .whitespacesAndNewlines)
+            .map { normalizeToken($0) }
+            .filter { !$0.isEmpty && !stopTokens.contains($0) }
+        
+        guard !terms.isEmpty else { return [] }
+        
         return popularFoods.filter { item in
-            let target = "\(item.name) \(item.brand)".lowercased()
-            return terms.allSatisfy { target.contains($0) }
+            let targetTokens = "\(item.name) \(item.brand)"
+                .components(separatedBy: .whitespacesAndNewlines)
+                .map { normalizeToken($0) }
+                .joined(separator: " ")
+            return terms.allSatisfy { targetTokens.contains($0) }
         }
     }
     

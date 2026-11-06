@@ -1,0 +1,24 @@
+name: Render Backend Keep-Alive
+
+on:
+  schedule:
+    # Dispara a cada 12 minutos para manter o serviço ativo no plano gratuito do Render
+    - cron: "*/12 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Forma Backend no Render
+        env:
+          RENDER_BACKEND_URL: ${{ vars.RENDER_BACKEND_URL }}
+        run: |
+          if [ -z "$RENDER_BACKEND_URL" ]; then
+            echo "Variável RENDER_BACKEND_URL ainda não configurada em Settings > Secrets and variables > Actions > Variables."
+            exit 0
+          fi
+          URL="${RENDER_BACKEND_URL%/}/api/ping"
+          echo "Enviando ping externo para $URL..."
+          curl -fsSL --max-time 25 "$URL"
+          echo ""

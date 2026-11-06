@@ -22,7 +22,8 @@ public final class AppNavigationRouter: ObservableObject {
     private init() {}
     
     public func handleDeepLink(_ url: URL) {
-        guard let scheme = url.scheme, scheme.lowercased() == "contaca" else { return }
+        guard let rawScheme = url.scheme?.lowercased(),
+              rawScheme == "forma" || rawScheme == "contaca" else { return }
         
         let host = url.host?.lowercased() ?? url.path.replacingOccurrences(of: "/", with: "").lowercased()
         

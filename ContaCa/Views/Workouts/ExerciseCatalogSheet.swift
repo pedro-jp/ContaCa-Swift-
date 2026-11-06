@@ -93,6 +93,7 @@ public struct ExerciseCatalogSheet: View {
                     }
                     .padding(16)
                 }
+                .scrollIndicators(.hidden)
             }
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("Catálogo de Execuções")

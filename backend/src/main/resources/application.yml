@@ -1,0 +1,47 @@
+server:
+  port: ${PORT:8085}
+  address: 0.0.0.0
+  tomcat:
+    max-http-form-post-size: 15MB
+    max-swallow-size: 15MB
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 15MB
+      max-request-size: 15MB
+  application:
+    name: contaca-backend
+  datasource:
+    url: ${SUPABASE_DB_URL:jdbc:h2:file:./contaca_local_db;DB_CLOSE_DELAY=-1}
+    username: ${SUPABASE_DB_USER:sa}
+    password: ${SUPABASE_DB_PASSWORD:}
+    driver-class-name: ${SUPABASE_DB_DRIVER:org.h2.Driver}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+      minimum-idle: 1
+      idle-timeout: 300000
+      connection-timeout: 20000
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:ContaCaSuperSecretJwtKey2026WithMinimum256BitsLengthForHmacSha256Security!}
+    expiration-ms: 2592000000 # 30 dias em milissegundos
+  admin:
+    username: ${ADMIN_USERNAME:admin}
+    password: ${ADMIN_PASSWORD:admin123}
+    key: ${ADMIN_KEY:admin123}
+  google:
+    client-id: ${GOOGLE_CLIENT_ID:}
+  keepalive:
+    enabled: ${KEEPALIVE_ENABLED:true}
+    public-url: ${RENDER_EXTERNAL_URL:${APP_PUBLIC_URL:}}
+    interval-ms: ${KEEPALIVE_INTERVAL_MS:600000}

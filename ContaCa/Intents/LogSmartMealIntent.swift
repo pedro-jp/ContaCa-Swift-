@@ -11,8 +11,8 @@ import WidgetKit
 
 /// Intent da Siri para registrar refeições completas em linguagem natural usando IA
 public struct LogSmartMealIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Registrar Refeição no ContaCa"
-    public static var description = IntentDescription("Registra alimentos consumidos usando inteligência artificial no ContaCa.")
+    public static var title: LocalizedStringResource = "Registrar Refeição no Forma"
+    public static var description = IntentDescription("Registra alimentos consumidos usando inteligência artificial no Forma.")
     public static var openAppWhenRun: Bool = false
     
     @Parameter(
@@ -73,7 +73,7 @@ public struct LogSmartMealIntent: AppIntent {
         if parseResult.items.count == 1 {
             confirmation = "Pronto! Registrei \(itemsNames) no seu \(parseResult.mealType.rawValue). Aprox. \(caloriesInt) kcal e \(proteinInt)g de proteína."
         } else {
-            confirmation = "Refeição registrada no ContaCa! \(parseResult.items.count) itens salvos no \(parseResult.mealType.rawValue), somando cerca de \(caloriesInt) kcal e \(proteinInt)g de proteína."
+            confirmation = "Refeição registrada no Forma! \(parseResult.items.count) itens salvos no \(parseResult.mealType.rawValue), somando cerca de \(caloriesInt) kcal e \(proteinInt)g de proteína."
         }
         
         return .result(

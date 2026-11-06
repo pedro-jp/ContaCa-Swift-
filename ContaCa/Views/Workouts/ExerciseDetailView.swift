@@ -30,7 +30,7 @@ public struct ExerciseDetailView: View {
                             .frame(maxWidth: .infinity)
                             .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 3)
                         
-                        Text("Demonstração em loop com fases concêntrica e excêntrica")
+                        Text("Demonstração em loop do movimento completo")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -93,9 +93,9 @@ public struct ExerciseDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 2)
                     
-                    // Passo a Passo Biomecânico de Hipertrofia
+                    // Passo a Passo de Execução
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("GUIA BIOMECÂNICO & EXECUÇÃO")
+                        Text("COMO EXECUTAR CORRETAMENTE")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.secondary)
                         
@@ -109,7 +109,7 @@ public struct ExerciseDetailView: View {
                         
                         instructionRow(
                             stepNumber: "2",
-                            title: "Fase Excêntrica (Alongamento sob Tensão)",
+                            title: "Descida Controlada",
                             description: item.eccentricInstruction,
                             icon: "arrow.down.circle.fill",
                             accentColor: .orange
@@ -117,7 +117,7 @@ public struct ExerciseDetailView: View {
                         
                         instructionRow(
                             stepNumber: "3",
-                            title: "Fase Concêntrica (Pico de Contração)",
+                            title: "Subida & Contração",
                             description: item.concentricInstruction,
                             icon: "arrow.up.circle.fill",
                             accentColor: Color("AccentGreen")
@@ -125,7 +125,7 @@ public struct ExerciseDetailView: View {
                         
                         instructionRow(
                             stepNumber: "4",
-                            title: "Respiração & Pressão Intra-abdominal",
+                            title: "Respiração & Firmeza do Abdômen",
                             description: item.breathingInstruction,
                             icon: "lungs.fill",
                             accentColor: .teal
@@ -167,8 +167,9 @@ public struct ExerciseDetailView: View {
                 .padding(16)
                 .frame(maxWidth: .infinity)
             }
+            .scrollIndicators(.hidden)
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
-            .navigationTitle("Execução & Biomecânica")
+            .navigationTitle("Como Executar")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

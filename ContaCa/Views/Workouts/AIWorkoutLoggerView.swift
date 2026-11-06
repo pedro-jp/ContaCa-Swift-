@@ -63,6 +63,7 @@ struct AIWorkoutLoggerView: View {
                     }
                     .padding(20)
                 }
+                .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
             }
             .dismissKeyboardOnTap()
@@ -125,10 +126,10 @@ struct AIWorkoutLoggerView: View {
             }
             
             VStack(alignment: .leading, spacing: 2) {
-                Text("Análise de Hipertrofia & Gasto Calórico")
+                Text("Análise de Treino & Gasto Calórico")
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .foregroundColor(Color("FontNormal"))
-                Text("Cálculo fisiológico baseado em MET e no seu peso (\(Int(userWeight)) kg)")
+                Text("Calculado pela Inteligência Forma para o seu peso (\(Int(userWeight)) kg)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -192,9 +193,14 @@ struct AIWorkoutLoggerView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             
             if let error = errorMessage {
-                Text(error)
-                    .font(.system(size: 12))
-                    .foregroundColor(.red)
+                FormaBanner(
+                    message: error,
+                    style: .error,
+                    retryTitle: "Repetir",
+                    onRetry: !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? { analyzeWorkoutText() }
+                        : nil
+                )
             }
             
             Button {
@@ -204,7 +210,7 @@ struct AIWorkoutLoggerView: View {
                     if geminiService.isLoading {
                         ProgressView()
                             .tint(.white)
-                        Text("Analisando Biomecânica...")
+                        Text("Montando seu treino...")
                     } else {
                         Image(systemName: "sparkles")
                         Text("Criar ou Calcular Treino")
@@ -324,7 +330,7 @@ struct AIWorkoutLoggerView: View {
                 
                 if !workout.hypertrophyFocus.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("ESTÍMULO DE HIPERTROFIA")
+                        Text("FOCO DO TREINO")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.secondary)
                         
@@ -373,7 +379,7 @@ struct AIWorkoutLoggerView: View {
                             HStack(spacing: 4) {
                                 Image(systemName: "wand.and.stars")
                                     .font(.system(size: 11))
-                                Text("Vincular com IA")
+                                Text("Vincular Exercícios")
                                     .font(.system(size: 11, weight: .bold))
                             }
                             .foregroundColor(Color("AccentColor"))

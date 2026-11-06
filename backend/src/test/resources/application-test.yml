@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:forma_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    open-in-view: false
+  sql:
+    init:
+      mode: never
+
+app:
+  jwt:
+    secret: FormaTestSuperSecretJwtKey2026WithMinimum256BitsLengthForHmacSha256Security!
+    expiration-ms: 86400000
+  admin:
+    username: admin
+    password: test_admin_password
+    key: test_admin_key
+  google:
+    client-id: test-google-client-id.apps.googleusercontent.com

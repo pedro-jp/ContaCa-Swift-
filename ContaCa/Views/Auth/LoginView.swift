@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AuthenticationServices
+import CryptoKit
 
 struct LoginView: View {
     @ObservedObject private var authManager = AuthManager.shared
@@ -16,16 +17,12 @@ struct LoginView: View {
     @State private var emailText: String = ""
     @State private var passwordText: String = ""
     
-    // Sheets de Autenticação Social
-    @State private var showGoogleSheet: Bool = false
-    @State private var googleEmailInput: String = "joaopedroc035@gmail.com"
-    @State private var googleNameInput: String = "João Pedro"
-    
-    @State private var showAppleFallbackSheet: Bool = false
-    @State private var appleEmailInput: String = "joaopedro@icloud.com"
-    @State private var appleNameInput: String = "João Pedro"
+    // Nonce criptográfico para Apple Sign-In
+    @State private var currentAppleNonce: String?
     
     @State private var localErrorMessage: String? = nil
+    @State private var showForgotPasswordSheet: Bool = false
+    @State private var showLegalPrivacySheet: Bool = false
     
     var onLoginSuccess: () -> Void
     
@@ -58,7 +55,7 @@ struct LoginView: View {
                                 )
                         }
                         
-                        Text("ContaCa")
+                        Text("Forma")
                             .font(.system(size: 28, weight: .heavy, design: .rounded))
                             .foregroundStyle(Color("FontNormal"))
                         
@@ -129,20 +126,26 @@ struct LoginView: View {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .stroke(Color.primary.opacity(0.06), lineWidth: 1)
                         )
+
+                        if !isRegisterMode {
+                            HStack {
+                                Spacer()
+                                Button {
+                                    showForgotPasswordSheet = true
+                                } label: {
+                                    Text("Esqueci minha senha")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Color("AccentColor"))
+                                }
+                            }
+                        }
                     }
                     .padding(.horizontal, 20)
                     
                     // Alerta de Erro
                     if let error = localErrorMessage ?? authManager.errorMessage {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundColor(.red)
-                            Text(error)
-                                .font(.caption.weight(.medium))
-                                .foregroundColor(.red)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 24)
+                        FormaBanner(message: error, style: .error)
+                            .padding(.horizontal, 20)
                     }
                     
                     // Botão Principal (Entrar / Cadastrar)
@@ -188,13 +191,16 @@ struct LoginView: View {
                     .padding(.horizontal, 24)
                     .padding(.vertical, 4)
                     
-                    // Botões de Login Social Seguro
+                    // Botões Oficiais de Autenticação Social
                     VStack(spacing: 12) {
-                        // Sign in with Apple Oficial
+                        // Sign in with Apple Oficial com Nonce SHA-256
                         SignInWithAppleButton(
                             .signIn,
                             onRequest: { request in
+                                let rawNonce = randomNonceString()
+                                self.currentAppleNonce = rawNonce
                                 request.requestedScopes = [.fullName, .email]
+                                request.nonce = sha256(rawNonce)
                             },
                             onCompletion: { result in
                                 handleAppleSignInResult(result)
@@ -205,9 +211,9 @@ struct LoginView: View {
                         .frame(height: 50)
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         
-                        // Sign in with Google Button
+                        // Google Sign-In Oficial via ASWebAuthenticationSession
                         Button {
-                            showGoogleSheet = true
+                            handleGoogleSignIn()
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "g.circle.fill")
@@ -229,183 +235,35 @@ struct LoginView: View {
                         }
                     }
                     .padding(.horizontal, 20)
+
+                    Button {
+                        showLegalPrivacySheet = true
+                    } label: {
+                        VStack(spacing: 3) {
+                            Text("Ao continuar, você concorda com nossos termos e avisos de saúde.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("Política de Privacidade, Saúde & Termos de Uso")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color("AccentColor"))
+                        }
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                    }
                     .padding(.bottom, 24)
                 }
             }
+            .scrollIndicators(.hidden)
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showGoogleSheet) {
-                googleLoginSheet
+            .sheet(isPresented: $showForgotPasswordSheet) {
+                PasswordRecoverySheet(initialEmail: emailText) {
+                    onLoginSuccess()
+                }
             }
-            .sheet(isPresented: $showAppleFallbackSheet) {
-                appleFallbackSheet
+            .sheet(isPresented: $showLegalPrivacySheet) {
+                LegalPrivacySheet()
             }
         }
-    }
-    
-    // MARK: - Sheet de Login com Google
-    private var googleLoginSheet: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 12) {
-                    Image(systemName: "g.circle.fill")
-                        .font(.system(size: 38, weight: .bold))
-                        .foregroundStyle(.blue)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Google Sign-In")
-                            .font(.title3.bold())
-                        Text("Acesse com sua conta real do Google")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.top, 8)
-                
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("E-mail Google")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.secondary)
-                    
-                    TextField("seuemail@gmail.com", text: $googleEmailInput)
-                        .keyboardType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .padding(12)
-                        .background(Color(.systemBackground).opacity(0.8))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                        )
-                    
-                    Text("Nome Completo")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.secondary)
-                    
-                    TextField("Nome", text: $googleNameInput)
-                        .padding(12)
-                        .background(Color(.systemBackground).opacity(0.8))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                        )
-                }
-                
-                Spacer()
-                
-                Button {
-                    showGoogleSheet = false
-                    executeGoogleAuth(email: googleEmailInput, name: googleNameInput)
-                } label: {
-                    HStack(spacing: 8) {
-                        if authManager.isAuthenticating {
-                            ProgressView().tint(.white)
-                        }
-                        Text("Confirmar e Acessar")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.blue)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .disabled(googleEmailInput.trimmingCharacters(in: .whitespaces).isEmpty || authManager.isAuthenticating)
-            }
-            .padding(24)
-            .navigationTitle("Entrar com Google")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancelar") { showGoogleSheet = false }
-                }
-            }
-        }
-        .presentationDetents([.height(380)])
-    }
-    
-    // MARK: - Sheet Fallback de Apple ID (para testes em simulador sem iCloud)
-    private var appleFallbackSheet: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 12) {
-                    Image(systemName: "applelogo")
-                        .font(.system(size: 38, weight: .bold))
-                        .foregroundColor(.primary)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Sign In with Apple")
-                            .font(.title3.bold())
-                        Text("Acesse com seu Apple ID real")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.top, 8)
-                
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Apple ID / E-mail iCloud")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.secondary)
-                    
-                    TextField("seuemail@icloud.com", text: $appleEmailInput)
-                        .keyboardType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .padding(12)
-                        .background(Color(.systemBackground).opacity(0.8))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                        )
-                    
-                    Text("Nome Completo")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.secondary)
-                    
-                    TextField("Nome", text: $appleNameInput)
-                        .padding(12)
-                        .background(Color(.systemBackground).opacity(0.8))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                        )
-                }
-                
-                Spacer()
-                
-                Button {
-                    showAppleFallbackSheet = false
-                    executeAppleAuth(email: appleEmailInput, name: appleNameInput, providerId: "apple_id_\(abs(appleEmailInput.hashValue))")
-                } label: {
-                    HStack(spacing: 8) {
-                        if authManager.isAuthenticating {
-                            ProgressView().tint(.white)
-                        }
-                        Text("Acessar com Apple ID")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .disabled(appleEmailInput.trimmingCharacters(in: .whitespaces).isEmpty || authManager.isAuthenticating)
-            }
-            .padding(24)
-            .navigationTitle("Sign in with Apple")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancelar") { showAppleFallbackSheet = false }
-                }
-            }
-        }
-        .presentationDetents([.height(380)])
     }
     
     // MARK: - Tratamento de Ações
@@ -425,83 +283,112 @@ struct LoginView: View {
         }
     }
     
+    // MARK: - Sign in with Apple Oficial
     private func handleAppleSignInResult(_ result: Result<ASAuthorization, Error>) {
         localErrorMessage = nil
         switch result {
         case .success(let authorization):
-            if let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
-                let userId = appleIDCredential.user
-                let email = appleIDCredential.email
-                let givenName = appleIDCredential.fullName?.givenName
-                let familyName = appleIDCredential.fullName?.familyName
-                let fullName = [givenName, familyName].compactMap { $0 }.joined(separator: " ")
-                let idToken = appleIDCredential.identityToken.flatMap { String(data: $0, encoding: .utf8) }
-                
-                Task {
-                    do {
-                        try await authManager.loginWithSocial(
-                            provider: "APPLE",
-                            providerId: userId,
-                            email: email,
-                            name: fullName.isEmpty ? "Usuário Apple" : fullName,
-                            idToken: idToken
-                        )
-                        onLoginSuccess()
-                    } catch {
-                        localErrorMessage = error.localizedDescription
-                    }
+            guard let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                return
+            }
+            let userId = appleIDCredential.user
+            let rawNonce = currentAppleNonce
+            
+            // 1. Tratamento de Nome do Usuário
+            var fullName: String? = nil
+            if let appleFullName = appleIDCredential.fullName {
+                let parts = [appleFullName.givenName, appleFullName.familyName].compactMap { $0 }
+                let joined = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !joined.isEmpty {
+                    fullName = joined
+                    KeychainHelper.shared.save(key: "apple_name_\(userId)", string: joined)
                 }
             }
+            if fullName == nil {
+                fullName = KeychainHelper.shared.loadString(key: "apple_name_\(userId)")
+            }
+            
+            // 2. Tratamento de E-mail
+            var email: String? = appleIDCredential.email
+            if let email = email, !email.isEmpty {
+                KeychainHelper.shared.save(key: "apple_email_\(userId)", string: email)
+            } else {
+                email = KeychainHelper.shared.loadString(key: "apple_email_\(userId)")
+            }
+            
+            // 3. Identity Token UTF-8 assinado pela Apple
+            let idToken = appleIDCredential.identityToken.flatMap { String(data: $0, encoding: .utf8) }
+            
+            Task {
+                do {
+                    try await authManager.loginWithSocial(
+                        provider: "APPLE",
+                        providerId: userId,
+                        email: email,
+                        name: fullName ?? "Usuário Apple",
+                        idToken: idToken,
+                        nonce: rawNonce
+                    )
+                    onLoginSuccess()
+                } catch {
+                    localErrorMessage = error.localizedDescription
+                }
+            }
+            
         case .failure(let error):
-            // Se o usuário cancelou ou se estiver no simulador sem conta Apple, abre o sheet com fallback elegante
             let nsError = error as NSError
             if nsError.domain == ASAuthorizationError.errorDomain, nsError.code == ASAuthorizationError.canceled.rawValue {
                 return
             }
-            showAppleFallbackSheet = true
+            localErrorMessage = error.localizedDescription
         }
     }
     
-    private func executeAppleAuth(email: String, name: String, providerId: String) {
+    // MARK: - Google Sign-In Oficial
+    private func handleGoogleSignIn() {
         localErrorMessage = nil
-        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawNonce = randomNonceString()
         
         Task {
             do {
-                try await authManager.loginWithSocial(
-                    provider: "APPLE",
-                    providerId: providerId,
-                    email: cleanEmail,
-                    name: cleanName.isEmpty ? "Usuário Apple" : cleanName,
-                    idToken: "apple_identity_token_verified"
-                )
-                onLoginSuccess()
-            } catch {
-                localErrorMessage = error.localizedDescription
-            }
-        }
-    }
-    
-    private func executeGoogleAuth(email: String, name: String) {
-        localErrorMessage = nil
-        let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let providerId = "google_user_\(abs(cleanEmail.hashValue))"
-        
-        Task {
-            do {
+                let userResult = try await GoogleAuthService.shared.startSignIn(rawNonce: rawNonce)
                 try await authManager.loginWithSocial(
                     provider: "GOOGLE",
-                    providerId: providerId,
-                    email: cleanEmail,
-                    name: cleanName.isEmpty ? "Usuário Google" : cleanName,
-                    idToken: "google_identity_token_verified"
+                    providerId: userResult.sub ?? "google_user_\(abs(rawNonce.hashValue))",
+                    email: userResult.email,
+                    name: userResult.name ?? "Usuário Google",
+                    idToken: userResult.idToken,
+                    nonce: rawNonce
                 )
                 onLoginSuccess()
+            } catch is CancellationError {
+                // Usuário fechou o sheet de login
+                return
             } catch {
                 localErrorMessage = error.localizedDescription
             }
         }
+    }
+    
+    // MARK: - Geradores Criptográficos de Nonce
+    private func randomNonceString(length: Int = 32) -> String {
+        precondition(length > 0)
+        var randomBytes = [UInt8](repeating: 0, count: length)
+        let errorCode = SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
+        if errorCode != errSecSuccess {
+            return UUID().uuidString
+        }
+        let charset: [Character] =
+            Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        let nonce = randomBytes.map { byte in
+            charset[Int(byte) % charset.count]
+        }
+        return String(nonce)
+    }
+    
+    private func sha256(_ input: String) -> String {
+        let inputData = Data(input.utf8)
+        let hashedData = SHA256.hash(data: inputData)
+        return hashedData.compactMap { String(format: "%02x", $0) }.joined()
     }
 }

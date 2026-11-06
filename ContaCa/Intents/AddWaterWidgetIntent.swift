@@ -25,6 +25,7 @@ public struct AddWaterWidgetIntent: AppIntent {
         self.milliliters = milliliters
     }
     
+    @MainActor
     public func perform() async throws -> some IntentResult {
         WidgetDataManager.shared.addWater(milliliters: milliliters)
         return .result()

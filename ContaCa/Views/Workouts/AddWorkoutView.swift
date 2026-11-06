@@ -84,6 +84,7 @@ struct AddWorkoutView: View {
                         .lineLimit(3...6)
                 }
             }
+            .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
             .dismissKeyboardOnTap()
             .withDoneKeyboardToolbar()

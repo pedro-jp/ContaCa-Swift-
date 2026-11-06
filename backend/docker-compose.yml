@@ -1,0 +1,17 @@
+services:
+  forma-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: forma-backend
+    ports:
+      - "${PORT:-8085}:8085"
+    env_file:
+      - path: ../.env
+        required: false
+      - path: ./.env
+        required: false
+    environment:
+      PORT: 8085
+      KEEPALIVE_ENABLED: "false"
+    restart: unless-stopped

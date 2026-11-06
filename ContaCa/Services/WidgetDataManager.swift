@@ -12,7 +12,10 @@ import WidgetKit
 public struct WidgetCalorieData: Codable, Sendable {
     public var caloriesConsumed: Double
     public var caloriesTarget: Double
+    public var baseCaloriesTarget: Double
     public var caloriesBurned: Double
+    public var activeCaloriesBurned: Double
+    public var stepsCount: Int
     public var proteinConsumed: Double
     public var proteinTarget: Double
     public var carbsConsumed: Double
@@ -24,10 +27,20 @@ public struct WidgetCalorieData: Codable, Sendable {
     public var goalRaw: String
     public var lastUpdated: Date
     
+    enum CodingKeys: String, CodingKey {
+        case caloriesConsumed, caloriesTarget, baseCaloriesTarget, caloriesBurned
+        case activeCaloriesBurned, stepsCount, proteinConsumed, proteinTarget
+        case carbsConsumed, carbsTarget, fatConsumed, fatTarget, waterConsumed
+        case waterTarget, goalRaw, lastUpdated
+    }
+    
     public init(
         caloriesConsumed: Double = 0,
         caloriesTarget: Double = 2500,
+        baseCaloriesTarget: Double = 2500,
         caloriesBurned: Double = 0,
+        activeCaloriesBurned: Double = 0,
+        stepsCount: Int = 0,
         proteinConsumed: Double = 0,
         proteinTarget: Double = 160,
         carbsConsumed: Double = 0,
@@ -41,7 +54,10 @@ public struct WidgetCalorieData: Codable, Sendable {
     ) {
         self.caloriesConsumed = caloriesConsumed
         self.caloriesTarget = caloriesTarget
+        self.baseCaloriesTarget = baseCaloriesTarget
         self.caloriesBurned = caloriesBurned
+        self.activeCaloriesBurned = activeCaloriesBurned
+        self.stepsCount = stepsCount
         self.proteinConsumed = proteinConsumed
         self.proteinTarget = proteinTarget
         self.carbsConsumed = carbsConsumed
@@ -52,6 +68,27 @@ public struct WidgetCalorieData: Codable, Sendable {
         self.waterTarget = waterTarget
         self.goalRaw = goalRaw
         self.lastUpdated = lastUpdated
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.caloriesConsumed = try container.decodeIfPresent(Double.self, forKey: .caloriesConsumed) ?? 0
+        let target = try container.decodeIfPresent(Double.self, forKey: .caloriesTarget) ?? 2500
+        self.caloriesTarget = target
+        self.baseCaloriesTarget = try container.decodeIfPresent(Double.self, forKey: .baseCaloriesTarget) ?? target
+        self.caloriesBurned = try container.decodeIfPresent(Double.self, forKey: .caloriesBurned) ?? 0
+        self.activeCaloriesBurned = try container.decodeIfPresent(Double.self, forKey: .activeCaloriesBurned) ?? 0
+        self.stepsCount = try container.decodeIfPresent(Int.self, forKey: .stepsCount) ?? 0
+        self.proteinConsumed = try container.decodeIfPresent(Double.self, forKey: .proteinConsumed) ?? 0
+        self.proteinTarget = try container.decodeIfPresent(Double.self, forKey: .proteinTarget) ?? 160
+        self.carbsConsumed = try container.decodeIfPresent(Double.self, forKey: .carbsConsumed) ?? 0
+        self.carbsTarget = try container.decodeIfPresent(Double.self, forKey: .carbsTarget) ?? 300
+        self.fatConsumed = try container.decodeIfPresent(Double.self, forKey: .fatConsumed) ?? 0
+        self.fatTarget = try container.decodeIfPresent(Double.self, forKey: .fatTarget) ?? 70
+        self.waterConsumed = try container.decodeIfPresent(Int.self, forKey: .waterConsumed) ?? 0
+        self.waterTarget = try container.decodeIfPresent(Int.self, forKey: .waterTarget) ?? 2500
+        self.goalRaw = try container.decodeIfPresent(String.self, forKey: .goalRaw) ?? "gain"
+        self.lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? Date()
     }
     
     public var remainingCalories: Double {
@@ -66,6 +103,22 @@ public struct WidgetCalorieData: Codable, Sendable {
     public var waterProgressRatio: Double {
         guard waterTarget > 0 else { return 0 }
         return min(1.0, max(0.0, Double(waterConsumed) / Double(waterTarget)))
+    }
+    
+    /// Reinicia os contadores diários para um novo dia (à meia-noite), preservando apenas metas base
+    public func resetForNewDay(date: Date = Date()) -> WidgetCalorieData {
+        var copy = self
+        copy.caloriesConsumed = 0
+        copy.proteinConsumed = 0
+        copy.carbsConsumed = 0
+        copy.fatConsumed = 0
+        copy.waterConsumed = 0
+        copy.caloriesBurned = 0
+        copy.activeCaloriesBurned = 0
+        copy.stepsCount = 0
+        copy.caloriesTarget = copy.baseCaloriesTarget > 0 ? copy.baseCaloriesTarget : copy.caloriesTarget
+        copy.lastUpdated = date
+        return copy
     }
 }
 
@@ -133,7 +186,7 @@ public final class WidgetDataManager: Sendable {
         WidgetCenter.shared.reloadAllTimelines()
     }
     
-    public func loadWidgetData() -> WidgetCalorieData {
+    public func loadRawWidgetData() -> WidgetCalorieData {
         let decoder = JSONDecoder()
         
         // 1. Tenta recuperar do App Group UserDefaults
@@ -158,5 +211,16 @@ public final class WidgetDataManager: Sendable {
         }
         
         return WidgetCalorieData()
+    }
+    
+    public func loadWidgetData(for date: Date = Date()) -> WidgetCalorieData {
+        var data = loadRawWidgetData()
+        let calendar = Calendar.current
+        // Se a data do snapshot for de um dia diferente (passou da meia-noite), reinicia para o novo dia
+        if !calendar.isDate(data.lastUpdated, inSameDayAs: date) {
+            data = data.resetForNewDay(date: date)
+            saveWidgetData(data)
+        }
+        return data
     }
 }

@@ -18,6 +18,13 @@
 			remoteGlobalIDString = CF5EFE02307E8E47006A8F99;
 			remoteInfo = ContaCaWidgetsExtension;
 		};
+		CF5EFE20307E8E47006A8F99 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = CF5EFDA5307E8E47006A8F99 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CF5EFDAC307E8E47006A8F99;
+			remoteInfo = ContaCa;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -35,6 +42,7 @@
 /* Begin PBXFileReference section */
 		CF5EFDAD307E8E47006A8F99 /* ContaCa.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ContaCa.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CF5EFE07307E8E47006A8F99 /* ContaCaWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ContaCaWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		CF5EFE21307E8E47006A8F99 /* ContaCaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ContaCaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -46,6 +54,11 @@
 		CF5EFE01307E8E47006A8F99 /* ContaCaWidgets */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = ContaCaWidgets;
+			sourceTree = "<group>";
+		};
+		CF5EFE22307E8E47006A8F99 /* ContaCaTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ContaCaTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -61,6 +74,11 @@
 			files = (
 			);
 		};
+		CF5EFE24307E8E47006A8F99 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -69,6 +87,7 @@
 			children = (
 				CF5EFDAF307E8E47006A8F99 /* ContaCa */,
 				CF5EFE01307E8E47006A8F99 /* ContaCaWidgets */,
+				CF5EFE22307E8E47006A8F99 /* ContaCaTests */,
 				CF5EFDAE307E8E47006A8F99 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -78,6 +97,7 @@
 			children = (
 				CF5EFDAD307E8E47006A8F99 /* ContaCa.app */,
 				CF5EFE07307E8E47006A8F99 /* ContaCaWidgetsExtension.appex */,
+				CF5EFE21307E8E47006A8F99 /* ContaCaTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -125,6 +145,27 @@
 			productReference = CF5EFE07307E8E47006A8F99 /* ContaCaWidgetsExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		CF5EFE27307E8E47006A8F99 /* ContaCaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CF5EFE2A307E8E49006A8F99 /* Build configuration list for PBXNativeTarget "ContaCaTests" */;
+			buildPhases = (
+				CF5EFE23307E8E47006A8F99 /* Sources */,
+				CF5EFE24307E8E47006A8F99 /* Frameworks */,
+				CF5EFE25307E8E47006A8F99 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CF5EFE26307E8E47006A8F99 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				CF5EFE22307E8E47006A8F99 /* ContaCaTests */,
+			);
+			name = ContaCaTests;
+			productName = ContaCaTests;
+			productReference = CF5EFE21307E8E47006A8F99 /* ContaCaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -145,6 +186,12 @@
 						DevelopmentTeam = Q42LJ4LG32;
 						ProvisioningStyle = Automatic;
 					};
+					CF5EFE27307E8E47006A8F99 = {
+						CreatedOnToolsVersion = 27.1;
+						DevelopmentTeam = Q42LJ4LG32;
+						ProvisioningStyle = Automatic;
+						TestTargetID = CF5EFDAC307E8E47006A8F99;
+					};
 				};
 			};
 			buildConfigurationList = CF5EFDA8307E8E47006A8F99 /* Build configuration list for PBXProject "ContaCa" */;
@@ -163,6 +210,7 @@
 			targets = (
 				CF5EFDAC307E8E47006A8F99 /* ContaCa */,
 				CF5EFE02307E8E47006A8F99 /* ContaCaWidgetsExtension */,
+				CF5EFE27307E8E47006A8F99 /* ContaCaTests */,
 			);
 		};
 /* End PBXProject section */
@@ -174,6 +222,11 @@
 			);
 		};
 		CF5EFE06307E8E47006A8F99 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		CF5EFE25307E8E47006A8F99 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -191,6 +244,11 @@
 			files = (
 			);
 		};
+		CF5EFE23307E8E47006A8F99 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -198,6 +256,11 @@
 			isa = PBXTargetDependency;
 			target = CF5EFE02307E8E47006A8F99 /* ContaCaWidgetsExtension */;
 			targetProxy = CF5EFE12307E8E47006A8F99 /* PBXContainerItemProxy */;
+		};
+		CF5EFE26307E8E47006A8F99 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CF5EFDAC307E8E47006A8F99 /* ContaCa */;
+			targetProxy = CF5EFE20307E8E47006A8F99 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -337,12 +400,14 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Forma;
-				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleURLName = \"jota.ContaCa\";\n    CFBundleURLSchemes =     (\n        contaca\n    );\n}";
-				INFOPLIST_KEY_NSContactsUsageDescription = Precisamos;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "O app precisa acessar seus dados para exibir seus passos e calorias.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "O ContaCa precisa salvar seus treinos e calorias gastas no app Saúde.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "O ContaCa precisa do microfone para voce ditar os alimentos consumidos.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "O ContaCa usa o reconhecimento de voz para transcrever e registrar seus alimentos automaticamente.";
+				INFOPLIST_KEY_CFBundleURLTypes = "({\n    CFBundleURLName = \"jota.ContaCa\";\n    CFBundleURLSchemes =     (\n        forma,\n        contaca\n    );\n},{\n    CFBundleURLName = \"Google OAuth\";\n    CFBundleURLSchemes =     (\n        \"com.googleusercontent.apps.1092895218480-kca5pj9b1g8r50t66phm6ccnupr83p94\"\n    );\n})";
+				INFOPLIST_KEY_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "O Forma precisa da câmera para fotografar suas refeições e rótulos nutricionais para análise automática.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "O Forma precisa acessar seus dados do Saúde para exibir seus passos e calorias.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "O Forma precisa salvar seus treinos e calorias gastas no app Saúde.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "O Forma precisa do microfone para você ditar os alimentos consumidos.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "O Forma precisa acessar suas fotos para analisar imagens de refeições e rótulos nutricionais.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "O Forma usa o reconhecimento de voz para transcrever e registrar seus alimentos automaticamente.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -379,12 +444,14 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Forma;
-				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleURLName = \"jota.ContaCa\";\n    CFBundleURLSchemes =     (\n        contaca\n    );\n}";
-				INFOPLIST_KEY_NSContactsUsageDescription = Precisamos;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "O app precisa acessar seus dados para exibir seus passos e calorias.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "O ContaCa precisa salvar seus treinos e calorias gastas no app Saúde.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "O ContaCa precisa do microfone para voce ditar os alimentos consumidos.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "O ContaCa usa o reconhecimento de voz para transcrever e registrar seus alimentos automaticamente.";
+				INFOPLIST_KEY_CFBundleURLTypes = "({\n    CFBundleURLName = \"jota.ContaCa\";\n    CFBundleURLSchemes =     (\n        forma,\n        contaca\n    );\n},{\n    CFBundleURLName = \"Google OAuth\";\n    CFBundleURLSchemes =     (\n        \"com.googleusercontent.apps.1092895218480-kca5pj9b1g8r50t66phm6ccnupr83p94\"\n    );\n})";
+				INFOPLIST_KEY_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "O Forma precisa da câmera para fotografar suas refeições e rótulos nutricionais para análise automática.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "O Forma precisa acessar seus dados do Saúde para exibir seus passos e calorias.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "O Forma precisa salvar seus treinos e calorias gastas no app Saúde.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "O Forma precisa do microfone para você ditar os alimentos consumidos.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "O Forma precisa acessar suas fotos para analisar imagens de refeições e rótulos nutricionais.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "O Forma usa o reconhecimento de voz para transcrever e registrar seus alimentos automaticamente.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -467,6 +534,52 @@
 			};
 			name = Release;
 		};
+		CF5EFE28307E8E49006A8F99 /* Debug configuration for PBXNativeTarget "ContaCaTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q42LJ4LG32;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = jota.ContaCaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ContaCa.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ContaCa";
+			};
+			name = Debug;
+		};
+		CF5EFE29307E8E49006A8F99 /* Release configuration for PBXNativeTarget "ContaCaTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q42LJ4LG32;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = jota.ContaCaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ContaCa.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ContaCa";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -491,6 +604,14 @@
 			buildConfigurations = (
 				CF5EFE08307E8E49006A8F99 /* Debug configuration for PBXNativeTarget "ContaCaWidgetsExtension" */,
 				CF5EFE09307E8E49006A8F99 /* Release configuration for PBXNativeTarget "ContaCaWidgetsExtension" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		CF5EFE2A307E8E49006A8F99 /* Build configuration list for PBXNativeTarget "ContaCaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CF5EFE28307E8E49006A8F99 /* Debug configuration for PBXNativeTarget "ContaCaTests" */,
+				CF5EFE29307E8E49006A8F99 /* Release configuration for PBXNativeTarget "ContaCaTests" */,
 			);
 			defaultConfigurationName = Release;
 		};

@@ -18,6 +18,7 @@ public struct WorkoutExerciseItem: Codable, Identifiable, Sendable, Equatable {
     public var executionTip: String
     public var restSeconds: Int
     public var completedSets: [Bool]
+    public var animationId: String?
     
     enum CodingKeys: String, CodingKey {
         case id, name, sets, reps
@@ -26,6 +27,7 @@ public struct WorkoutExerciseItem: Codable, Identifiable, Sendable, Equatable {
         case executionTip = "execution_tip"
         case restSeconds = "rest_seconds"
         case completedSets = "completed_sets"
+        case animationId = "animation_id"
     }
     
     public init(
@@ -37,7 +39,8 @@ public struct WorkoutExerciseItem: Codable, Identifiable, Sendable, Equatable {
         targetMuscle: String = "",
         executionTip: String = "",
         restSeconds: Int = 90,
-        completedSets: [Bool]? = nil
+        completedSets: [Bool]? = nil,
+        animationId: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -49,6 +52,7 @@ public struct WorkoutExerciseItem: Codable, Identifiable, Sendable, Equatable {
         self.executionTip = executionTip
         self.restSeconds = restSeconds > 0 ? restSeconds : 90
         self.completedSets = completedSets ?? Array(repeating: false, count: safeSets)
+        self.animationId = animationId
     }
     
     public var isAllSetsCompleted: Bool {
@@ -75,6 +79,38 @@ public struct SharedWorkoutState: Codable, Sendable {
     public var restDurationSeconds: Int
     public var isAllCompleted: Bool
     public var isFinished: Bool
+    
+    public init(
+        title: String,
+        workoutTypeRaw: String = "Musculação",
+        exercises: [WorkoutExerciseItem] = [],
+        currentExerciseIndex: Int = 0,
+        currentSetIndex: Int = 0,
+        sessionStartDate: Date = Date(),
+        baseCalories: Double = 350.0,
+        baseDurationMinutes: Int = 50,
+        isResting: Bool = false,
+        restStartDate: Date? = nil,
+        restEndDate: Date? = nil,
+        restDurationSeconds: Int = 90,
+        isAllCompleted: Bool = false,
+        isFinished: Bool = false
+    ) {
+        self.title = title
+        self.workoutTypeRaw = workoutTypeRaw
+        self.exercises = exercises
+        self.currentExerciseIndex = currentExerciseIndex
+        self.currentSetIndex = currentSetIndex
+        self.sessionStartDate = sessionStartDate
+        self.baseCalories = baseCalories
+        self.baseDurationMinutes = baseDurationMinutes
+        self.isResting = isResting
+        self.restStartDate = restStartDate
+        self.restEndDate = restEndDate
+        self.restDurationSeconds = restDurationSeconds
+        self.isAllCompleted = isAllCompleted
+        self.isFinished = isFinished
+    }
     
     public var totalSetsCount: Int {
         exercises.reduce(0) { $0 + $1.sets }

@@ -8,9 +8,19 @@
 import Foundation
 import HealthKit
 
+nonisolated struct ExternalWorkoutSample: Sendable {
+    let workoutType: WorkoutType
+    let title: String
+    let sourceName: String
+    let durationMinutes: Int
+    let caloriesBurned: Double
+    let startDate: Date
+}
+
 class HealthManager {
     static let shared = HealthManager()
     let healthStore = HKHealthStore()
+    private var isObservingWorkouts: Bool = false
     
     private(set) var isHealthDataAvailable: Bool = HKHealthStore.isHealthDataAvailable()
     
@@ -99,31 +109,72 @@ class HealthManager {
         let endDate = date
         let energyBurned = HKQuantity(unit: .kilocalorie(), doubleValue: caloriesBurned)
         
-        let workout = HKWorkout(
-            activityType: hkActivityType,
-            start: startDate,
-            end: endDate,
-            duration: Double(validDuration) * 60,
-            totalEnergyBurned: energyBurned,
-            totalDistance: nil,
-            metadata: [
-                HKMetadataKeyWorkoutBrandName: "ContaCa",
+        let configuration = HKWorkoutConfiguration()
+        configuration.activityType = hkActivityType
+        configuration.locationType = .indoor
+        
+        let builder = HKWorkoutBuilder(healthStore: healthStore, configuration: configuration, device: .local())
+        builder.beginCollection(withStart: startDate) { success, error in
+            guard success else {
+                completion?(false, error)
+                return
+            }
+            
+            let metadata: [String: Any] = [
+                HKMetadataKeyWorkoutBrandName: "Forma",
                 HKMetadataKeyIndoorWorkout: true
             ]
-        )
-        
-        healthStore.save(workout) { [weak self] success, error in
-            if success, let energyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) {
-                let sample = HKQuantitySample(
-                    type: energyType,
-                    quantity: energyBurned,
-                    start: startDate,
-                    end: endDate
+            
+            var samples: [HKSample] = []
+            if let energyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) {
+                samples.append(
+                    HKQuantitySample(
+                        type: energyType,
+                        quantity: energyBurned,
+                        start: startDate,
+                        end: endDate
+                    )
                 )
-                self?.healthStore.save(sample) { _, _ in }
             }
-            completion?(success, error)
+            
+            let finalizeCollection = {
+                builder.endCollection(withEnd: endDate) { endSuccess, endError in
+                    guard endSuccess else {
+                        completion?(false, endError)
+                        return
+                    }
+                    builder.finishWorkout { workout, finishError in
+                        completion?(workout != nil, finishError)
+                    }
+                }
+            }
+            
+            builder.addMetadata(metadata) { _, _ in
+                if samples.isEmpty {
+                    finalizeCollection()
+                } else {
+                    builder.add(samples) { _, _ in
+                        finalizeCollection()
+                    }
+                }
+            }
         }
+    }
+    
+    nonisolated static func activeEnergyKilocalories(for workout: HKWorkout) -> Double {
+        if let activeEnergyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned),
+           let sumQuantity = workout.statistics(for: activeEnergyType)?.sumQuantity() {
+            let value = sumQuantity.doubleValue(for: .kilocalorie())
+            if value > 0 {
+                return value
+            }
+        }
+        let durationMinutes = max(1, Int(workout.duration / 60.0))
+        return Double(durationMinutes * 8)
+    }
+
+    nonisolated func activeEnergyBurnedKilocalories(for workout: HKWorkout) -> Double {
+        Self.activeEnergyKilocalories(for: workout)
     }
     
     func fetchTodaySteps(completion: @escaping (Double) -> Void) {
@@ -252,18 +303,59 @@ class HealthManager {
     }
     
     // MARK: - Leitura e Sincronização de Treinos Externos (Strava, Apple Watch, Garmin, etc.)
-    
-    func fetchExternalWorkouts(days: Int = 7, completion: @escaping ([HKWorkout]) -> Void) {
+
+    nonisolated private static func mapExternalSample(_ hkWorkout: HKWorkout) -> ExternalWorkoutSample {
+        let durationMinutes = max(1, Int(hkWorkout.duration / 60.0))
+        let caloriesBurned = activeEnergyKilocalories(for: hkWorkout)
+        let sourceName = hkWorkout.sourceRevision.source.name
+
+        let workoutType: WorkoutType
+        let title: String
+        switch hkWorkout.workoutActivityType {
+        case .cycling:
+            workoutType = .cycling
+            title = "Pedalada / Bike (\(sourceName))"
+        case .running:
+            workoutType = .running
+            title = "Corrida (\(sourceName))"
+        case .walking:
+            workoutType = .walking
+            title = "Caminhada (\(sourceName))"
+        case .swimming:
+            workoutType = .swimming
+            title = "Natação (\(sourceName))"
+        case .traditionalStrengthTraining:
+            workoutType = .bodybuilding
+            title = "Musculação (\(sourceName))"
+        default:
+            workoutType = .other
+            title = "Treino (\(sourceName))"
+        }
+
+        return ExternalWorkoutSample(
+            workoutType: workoutType,
+            title: title,
+            sourceName: sourceName,
+            durationMinutes: durationMinutes,
+            caloriesBurned: caloriesBurned,
+            startDate: hkWorkout.startDate
+        )
+    }
+
+    func fetchExternalWorkoutSamples(
+        days: Int = 7,
+        completion: @escaping @MainActor ([ExternalWorkoutSample]) -> Void
+    ) {
         if isRunningForPreviews || !isHealthDataAvailable {
             completion([])
             return
         }
-        
+
         let calendar = Calendar.current
         let startDate = calendar.date(byAdding: .day, value: -days, to: Date()) ?? Date()
         let predicate = HKQuery.predicateForSamples(withStart: startDate, end: Date(), options: .strictStartDate)
         let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
-        
+
         let query = HKSampleQuery(
             sampleType: HKWorkoutType.workoutType(),
             predicate: predicate,
@@ -271,17 +363,37 @@ class HealthManager {
             sortDescriptors: [sortDescriptor]
         ) { _, samples, _ in
             guard let workouts = samples as? [HKWorkout] else {
-                completion([])
+                Task { @MainActor in
+                    completion([])
+                }
                 return
             }
-            // Filtra treinos externos (Strava, Bike, Apple Watch, etc.), ignorando os salvos pelo próprio ContaCa
-            let external = workouts.filter { workout in
+            // Filtra treinos externos (Strava, Bike, Apple Watch, etc.), ignorando os salvos pelo próprio Forma
+            let externalSamples = workouts.compactMap { workout -> ExternalWorkoutSample? in
                 let brand = workout.metadata?[HKMetadataKeyWorkoutBrandName] as? String
-                return brand != "ContaCa"
+                guard brand != "Forma" && brand != "ContaCa" else { return nil }
+                return Self.mapExternalSample(workout)
             }
-            completion(external)
+            Task { @MainActor in
+                completion(externalSamples)
+            }
         }
-        
+
         healthStore.execute(query)
+    }
+    
+    /// Observa novos treinos no Apple Saúde (Strava, Apple Watch, etc.) em segundo plano e notifica imediatamente.
+    func startObservingExternalWorkouts(onNewWorkout: @escaping @Sendable () -> Void) {
+        guard !isRunningForPreviews, isHealthDataAvailable, !isObservingWorkouts else { return }
+        isObservingWorkouts = true
+        
+        let workoutType = HKWorkoutType.workoutType()
+        let observerQuery = HKObserverQuery(sampleType: workoutType, predicate: nil) { _, completionHandler, error in
+            defer { completionHandler() }
+            guard error == nil else { return }
+            onNewWorkout()
+        }
+        healthStore.execute(observerQuery)
+        healthStore.enableBackgroundDelivery(for: workoutType, frequency: .immediate) { _, _ in }
     }
 }

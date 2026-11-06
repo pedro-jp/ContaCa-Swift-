@@ -12,8 +12,16 @@ import Combine
 @MainActor
 public final class BackendSyncManager: ObservableObject {
     public static let shared = BackendSyncManager()
+    public static let activeLocalUserIdKey = "contaca_active_local_user_id"
     
     private let lastSyncKey = "contaca_last_sync_timestamp"
+    private let requiresInitialPullKey = "contaca_requires_initial_pull"
+    private let deletedFoodIdsKey = "contaca_deleted_food_ids"
+    private let deletedWorkoutIdsKey = "contaca_deleted_workout_ids"
+    private let deletedWaterIdsKey = "contaca_deleted_water_ids"
+    private let deletedWeightIdsKey = "contaca_deleted_weight_ids"
+    private let deletedRoutineIdsKey = "contaca_deleted_routine_ids"
+    private var debouncedSyncTask: Task<Void, Never>? = nil
     
     @Published public var isSyncing: Bool = false
     @Published public var lastSyncDate: Date? = nil
@@ -25,7 +33,90 @@ public final class BackendSyncManager: ObservableObject {
         }
     }
     
-    // MARK: - Sincronização Completa (Local-First: Push + Pull)
+    public func cancelPendingSyncs() {
+        debouncedSyncTask?.cancel()
+        debouncedSyncTask = nil
+    }
+    
+    public func markRequiresInitialPull(_ value: Bool) {
+        UserDefaults.standard.set(value, forKey: requiresInitialPullKey)
+    }
+
+    // MARK: - Rastreamento Persistente de Exclusões Locais (Tombstones)
+
+    public func recordDeletedFoodIds(_ ids: [UUID]) {
+        appendDeletedIds(ids, forKey: deletedFoodIdsKey)
+    }
+
+    public func recordDeletedWorkoutIds(_ ids: [UUID]) {
+        appendDeletedIds(ids, forKey: deletedWorkoutIdsKey)
+    }
+
+    public func recordDeletedWaterIds(_ ids: [UUID]) {
+        appendDeletedIds(ids, forKey: deletedWaterIdsKey)
+    }
+
+    public func recordDeletedWeightIds(_ ids: [UUID]) {
+        appendDeletedIds(ids, forKey: deletedWeightIdsKey)
+    }
+
+    public func recordDeletedRoutineIds(_ ids: [UUID]) {
+        appendDeletedIds(ids, forKey: deletedRoutineIdsKey)
+    }
+
+    public func pendingDeletedFoodIds() -> Set<String> {
+        loadDeletedIdsSet(forKey: deletedFoodIdsKey)
+    }
+
+    public func pendingDeletedWorkoutIds() -> Set<String> {
+        loadDeletedIdsSet(forKey: deletedWorkoutIdsKey)
+    }
+
+    public func clearAllPendingDeletions() {
+        for key in [deletedFoodIdsKey, deletedWorkoutIdsKey, deletedWaterIdsKey, deletedWeightIdsKey, deletedRoutineIdsKey] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    private func appendDeletedIds(_ ids: [UUID], forKey key: String) {
+        guard !ids.isEmpty else { return }
+        var current = loadDeletedIdsSet(forKey: key)
+        for id in ids {
+            current.insert(id.uuidString.lowercased())
+        }
+        UserDefaults.standard.set(Array(current), forKey: key)
+    }
+
+    private func loadDeletedIdsSet(forKey key: String) -> Set<String> {
+        let raw = UserDefaults.standard.stringArray(forKey: key) ?? []
+        return Set(raw.map { $0.lowercased() })
+    }
+
+    private func acknowledgeDeletedIds(_ sentLowercasedIds: Set<String>, forKey key: String) {
+        guard !sentLowercasedIds.isEmpty else { return }
+        var current = loadDeletedIdsSet(forKey: key)
+        current.subtract(sentLowercasedIds)
+        if current.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(Array(current), forKey: key)
+        }
+    }
+    
+    /// Agenda uma sincronização automática silenciosa em segundo plano após alterações locais (com debounce de 2 segundos)
+    public func triggerAutoSync() {
+        guard AuthManager.shared.isAuthenticated else { return }
+        
+        debouncedSyncTask?.cancel()
+        debouncedSyncTask = Task { @MainActor [weak self] in
+            // Aguarda 2 segundos para agrupar múltiplas inserções rápidas sem onerar a rede ou travar a UI
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, let self = self else { return }
+            await self.sync(context: ContaCaDataStore.shared.mainContext)
+        }
+    }
+    
+    // MARK: - Sincronização Completa (Isolamento Multi-Usuário: Pull Inicial ou Push + Pull)
     public func sync(context: ModelContext) async {
         guard AuthManager.shared.isAuthenticated,
               let token = AuthManager.shared.jwtToken,
@@ -34,32 +125,53 @@ public final class BackendSyncManager: ObservableObject {
             return
         }
         
+        // Barreira de segurança multi-usuário: garante que dados locais pertençam exclusivamente ao userId autenticado
+        let activeLocalUserId = UserDefaults.standard.string(forKey: Self.activeLocalUserIdKey)
+        if let activeLocalUserId, activeLocalUserId != userId {
+            clearAllPendingDeletions()
+            ContaCaDataStore.shared.resetLocalDataForUserSwitch(
+                userName: AuthManager.shared.currentUserName,
+                userEmail: AuthManager.shared.currentUserEmail
+            )
+            UserDefaults.standard.set(userId, forKey: Self.activeLocalUserIdKey)
+            markRequiresInitialPull(true)
+        } else if activeLocalUserId == nil {
+            UserDefaults.standard.set(userId, forKey: Self.activeLocalUserIdKey)
+        }
+        
         isSyncing = true
         lastSyncError = nil
         defer { isSyncing = false }
         
         do {
-            // 1. PUSH: Envia dados locais para o Backend / Supabase
-            try await pushLocalData(context: context, token: token)
+            let needsInitialPull = UserDefaults.standard.bool(forKey: requiresInitialPullKey)
+            if needsInitialPull {
+                // Em novo login / troca de conta: SEMPRE faz PULL primeiro para restaurar os dados da conta na nuvem
+                // sem sobrescrever o perfil salvo com valores padrão nem vazar dados antigos.
+                try await pullRemoteData(context: context, token: token, userId: userId)
+                markRequiresInitialPull(false)
+            } else {
+                // 1. PUSH: Envia dados locais do usuário atual para o Backend / Supabase
+                try await pushLocalData(context: context, token: token)
+                
+                // 2. PULL: Baixa novidades do Backend
+                try await pullRemoteData(context: context, token: token, userId: userId)
+            }
             
-            // 2. PULL: Baixa novidades do Backend (caso o app tenha sido reinstalado)
-            try await pullRemoteData(context: context, token: token, userId: userId)
+            ContaCaDataStore.shared.syncTodayData(skipCloudSyncTrigger: true)
             
             let now = Date()
             self.lastSyncDate = now
             UserDefaults.standard.set(now, forKey: lastSyncKey)
-            print("☁️ [ContaCa Sync] Sincronização completa com Supabase concluída com sucesso.")
+            print("☁️ [Forma Sync] Sincronização completa com Supabase concluída com sucesso.")
         } catch {
             self.lastSyncError = error.localizedDescription
-            print("⚠️ [ContaCa Sync] Erro na sincronização: \(error.localizedDescription)")
+            print("⚠️ [Forma Sync] Erro na sincronização: \(error.localizedDescription)")
         }
     }
     
     // MARK: - Push (Local -> Backend / Supabase)
     private func pushLocalData(context: ModelContext, token: String) async throws {
-        let base = AuthManager.shared.serverBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: "\(base)/api/sync/push") else { return }
-        
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         
@@ -208,6 +320,16 @@ public final class BackendSyncManager: ObservableObject {
             return logDict
         }
         
+        let currentUserId = AuthManager.shared.currentUserId ?? ""
+        let resetAckKey = "contaca_reset_ack_\(currentUserId)"
+        let clientResetAck = UserDefaults.standard.object(forKey: resetAckKey) as? Int64 ?? 0
+
+        let sentFoodDeletes = loadDeletedIdsSet(forKey: deletedFoodIdsKey)
+        let sentWorkoutDeletes = loadDeletedIdsSet(forKey: deletedWorkoutIdsKey)
+        let sentWaterDeletes = loadDeletedIdsSet(forKey: deletedWaterIdsKey)
+        let sentWeightDeletes = loadDeletedIdsSet(forKey: deletedWeightIdsKey)
+        let sentRoutineDeletes = loadDeletedIdsSet(forKey: deletedRoutineIdsKey)
+        
         var payload: [String: Any] = [
             "foods": foodsArray,
             "workouts": workoutsArray,
@@ -215,67 +337,134 @@ public final class BackendSyncManager: ObservableObject {
             "weights": weightsArray,
             "routines": routinesArray,
             "analyses": analysesArray,
-            "activityLogs": activityLogsArray
+            "activityLogs": activityLogsArray,
+            "clientResetAckEpochMs": clientResetAck,
+            "deletedFoodIds": Array(sentFoodDeletes),
+            "deletedWorkoutIds": Array(sentWorkoutDeletes),
+            "deletedWaterIds": Array(sentWaterDeletes),
+            "deletedWeightIds": Array(sentWeightDeletes),
+            "deletedRoutineIds": Array(sentRoutineDeletes)
         ]
         if let profileDict = profileDict {
             payload["profile"] = profileDict
         }
         
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 25.0
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw NSError(domain: "Sync", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Falha ao enviar dados para a nuvem (\(http.statusCode))"])
+        let respData: Data
+        do {
+            respData = try await FormaAPIClient.shared.requestData(
+                path: "/api/sync/push",
+                method: "POST",
+                jsonBody: payload,
+                authenticated: true,
+                timeout: 15.0
+            )
+        } catch FormaAPIError.accountDeleted {
+            return
         }
+
+        if let respJson = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
+           let status = respJson["status"] as? String, status == "reset_required" {
+            let resetEpoch = (respJson["forceResetEpochMs"] as? NSNumber)?.int64Value ?? Int64(Date().timeIntervalSince1970 * 1000)
+            clearAllPendingDeletions()
+            ContaCaDataStore.shared.resetLocalDataForUserSwitch(
+                userName: AuthManager.shared.currentUserName,
+                userEmail: AuthManager.shared.currentUserEmail
+            )
+            UserDefaults.standard.set(resetEpoch, forKey: resetAckKey)
+            return
+        }
+
+        acknowledgeDeletedIds(sentFoodDeletes, forKey: deletedFoodIdsKey)
+        acknowledgeDeletedIds(sentWorkoutDeletes, forKey: deletedWorkoutIdsKey)
+        acknowledgeDeletedIds(sentWaterDeletes, forKey: deletedWaterIdsKey)
+        acknowledgeDeletedIds(sentWeightDeletes, forKey: deletedWeightIdsKey)
+        acknowledgeDeletedIds(sentRoutineDeletes, forKey: deletedRoutineIdsKey)
     }
     
     // MARK: - Pull (Backend / Supabase -> Local)
     private func pullRemoteData(context: ModelContext, token: String, userId: String) async throws {
-        let base = AuthManager.shared.serverBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: "\(base)/api/sync/pull?userId=\(userId)") else { return }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 25.0
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        let data: Data
+        do {
+            let encodedUserId = userId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? userId
+            data = try await FormaAPIClient.shared.requestData(
+                path: "/api/sync/pull?userId=\(encodedUserId)",
+                method: "GET",
+                authenticated: true,
+                timeout: 15.0
+            )
+        } catch FormaAPIError.accountDeleted {
+            return
+        } catch {
             return
         }
         
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return
+        }
+        
+        // Se a conta foi zerada pelo administrador desde o último ack local, limpa dados locais antes de restaurar
+        let resetAckKey = "contaca_reset_ack_\(userId)"
+        let localAck = UserDefaults.standard.object(forKey: resetAckKey) as? Int64 ?? 0
+        if let forceResetNum = json["forceResetEpochMs"] as? NSNumber {
+            let serverResetEpoch = forceResetNum.int64Value
+            if serverResetEpoch > localAck {
+                ContaCaDataStore.shared.resetLocalDataForUserSwitch(
+                    userName: AuthManager.shared.currentUserName,
+                    userEmail: AuthManager.shared.currentUserEmail
+                )
+                UserDefaults.standard.set(serverResetEpoch, forKey: resetAckKey)
+            }
         }
         
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let fallbackIso = ISO8601DateFormatter()
         
-        // 1. Restaura Profile
-        if let profileDict = json["profile"] as? [String: Any] {
-            let profileDesc = FetchDescriptor<Profile>()
-            let profile = try? context.fetch(profileDesc).first
-            if let p = profile {
-                if let g = profileDict["goal"] as? String { p.goalRaw = g }
-                if let ci = profileDict["targetCalorieIntake"] as? Double { p.targetCalorieIntake = ci }
-                if let cb = profileDict["targetCalorieBurn"] as? Double { p.targetCalorieBurn = cb }
-                if let ts = profileDict["targetSteps"] as? Double { p.targetSteps = ts }
-                if let tw = profileDict["targetWeight"] as? Double { p.targetWeight = tw }
-                if let tp = profileDict["targetProtein"] as? Double { p.targetProtein = tp }
-                if let tc = profileDict["targetCarbohydrates"] as? Double { p.targetCarbohydrates = tc }
-                if let tf = profileDict["targetFat"] as? Double { p.targetFat = tf }
-                if let twm = profileDict["targetWaterMilliliters"] as? Int { p.targetWaterMilliliters = twm }
-                if let hm = profileDict["heightMeters"] as? Double { p.height = hm }
-                if let cw = profileDict["currentWeight"] as? Double { p.currentWeight = cw }
+        // 1. Restaura Profile e sincroniza nome/e-mail da conta autenticada
+        let profileDesc = FetchDescriptor<Profile>()
+        let allProfiles = (try? context.fetch(profileDesc)) ?? []
+        if allProfiles.count > 1 {
+            for extra in allProfiles.dropFirst() {
+                context.delete(extra)
             }
         }
+        let targetProfile: Profile
+        if let existing = allProfiles.first {
+            targetProfile = existing
+        } else {
+            let fresh = Profile(
+                nome: AuthManager.shared.currentUserName ?? "Usuário",
+                email: AuthManager.shared.currentUserEmail ?? ""
+            )
+            context.insert(fresh)
+            targetProfile = fresh
+        }
+        if let authName = AuthManager.shared.currentUserName, !authName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            targetProfile.nome = authName
+        }
+        if let authEmail = AuthManager.shared.currentUserEmail, !authEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            targetProfile.email = authEmail
+        }
+        if let profileDict = json["profile"] as? [String: Any] {
+            if let g = profileDict["goal"] as? String { targetProfile.goalRaw = g }
+            if let ci = profileDict["targetCalorieIntake"] as? Double { targetProfile.targetCalorieIntake = ci }
+            if let cb = profileDict["targetCalorieBurn"] as? Double { targetProfile.targetCalorieBurn = cb }
+            if let ts = profileDict["targetSteps"] as? Double { targetProfile.targetSteps = ts }
+            if let tw = profileDict["targetWeight"] as? Double { targetProfile.targetWeight = tw }
+            if let tp = profileDict["targetProtein"] as? Double { targetProfile.targetProtein = tp }
+            if let tc = profileDict["targetCarbohydrates"] as? Double { targetProfile.targetCarbohydrates = tc }
+            if let tf = profileDict["targetFat"] as? Double { targetProfile.targetFat = tf }
+            if let twm = profileDict["targetWaterMilliliters"] as? Int { targetProfile.targetWaterMilliliters = twm }
+            if let hm = profileDict["heightMeters"] as? Double { targetProfile.height = hm }
+            if let cw = profileDict["currentWeight"] as? Double { targetProfile.currentWeight = cw }
+        }
         
+        let pendingFoodDeletes = loadDeletedIdsSet(forKey: deletedFoodIdsKey)
+        let pendingWorkoutDeletes = loadDeletedIdsSet(forKey: deletedWorkoutIdsKey)
+        let pendingWaterDeletes = loadDeletedIdsSet(forKey: deletedWaterIdsKey)
+        let pendingWeightDeletes = loadDeletedIdsSet(forKey: deletedWeightIdsKey)
+        let pendingRoutineDeletes = loadDeletedIdsSet(forKey: deletedRoutineIdsKey)
+
         // 2. Restaura Foods
         if let foods = json["foods"] as? [[String: Any]] {
             let existingDesc = FetchDescriptor<FoodEntry>()
@@ -285,7 +474,8 @@ public final class BackendSyncManager: ObservableObject {
             for f in foods {
                 guard let idStr = f["id"] as? String,
                       let id = UUID(uuidString: idStr),
-                      !existingIds.contains(idStr.lowercased()) else {
+                      !existingIds.contains(idStr.lowercased()),
+                      !pendingFoodDeletes.contains(idStr.lowercased()) else {
                     continue
                 }
                 let name = f["name"] as? String ?? "Alimento"
@@ -325,7 +515,8 @@ public final class BackendSyncManager: ObservableObject {
             for w in workouts {
                 guard let idStr = w["id"] as? String,
                       let id = UUID(uuidString: idStr),
-                      !existingIds.contains(idStr.lowercased()) else {
+                      !existingIds.contains(idStr.lowercased()),
+                      !pendingWorkoutDeletes.contains(idStr.lowercased()) else {
                     continue
                 }
                 let title = w["title"] as? String ?? "Treino"
@@ -359,7 +550,8 @@ public final class BackendSyncManager: ObservableObject {
             for wa in waters {
                 guard let idStr = wa["id"] as? String,
                       let id = UUID(uuidString: idStr),
-                      !existingIds.contains(idStr.lowercased()) else {
+                      !existingIds.contains(idStr.lowercased()),
+                      !pendingWaterDeletes.contains(idStr.lowercased()) else {
                     continue
                 }
                 let ml = wa["milliliters"] as? Int ?? 250
@@ -380,7 +572,8 @@ public final class BackendSyncManager: ObservableObject {
             for we in weights {
                 guard let idStr = we["id"] as? String,
                       let id = UUID(uuidString: idStr),
-                      !existingIds.contains(idStr.lowercased()) else {
+                      !existingIds.contains(idStr.lowercased()),
+                      !pendingWeightDeletes.contains(idStr.lowercased()) else {
                     continue
                 }
                 let weight = we["weight"] as? Double ?? 70.0
@@ -402,7 +595,8 @@ public final class BackendSyncManager: ObservableObject {
             for r in routines {
                 guard let idStr = r["id"] as? String,
                       let id = UUID(uuidString: idStr),
-                      !existingIds.contains(idStr.lowercased()) else {
+                      !existingIds.contains(idStr.lowercased()),
+                      !pendingRoutineDeletes.contains(idStr.lowercased()) else {
                     continue
                 }
                 let title = r["title"] as? String ?? "Ficha de Treino"
@@ -482,13 +676,20 @@ public final class BackendSyncManager: ObservableObject {
                 generatedAt: created
             )
             EvolutionAnalysisStore.shared.save(restoredAnalysis)
+        } else if let analyses = json["analyses"] as? [[String: Any]], analyses.isEmpty {
+            EvolutionAnalysisStore.shared.clear()
         }
         
         // 8. Restaura Logs de Atividades no AppActivityLogManager
         if let activityLogs = json["activityLogs"] as? [[String: Any]] {
+            let allPendingDeletes = pendingFoodDeletes
+                .union(pendingWorkoutDeletes)
+                .union(pendingWaterDeletes)
+                .union(pendingWeightDeletes)
             var recordsToMerge: [ActivityLogRecord] = []
             for l in activityLogs {
-                guard let id = l["id"] as? String else { continue }
+                guard let id = l["id"] as? String,
+                      !allPendingDeletes.contains(id.lowercased()) else { continue }
                 let cat = l["category"] as? String ?? "activity"
                 let title = l["title"] as? String ?? ""
                 let isSnack = l["isSnack"] as? Bool

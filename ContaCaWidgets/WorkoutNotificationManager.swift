@@ -30,6 +30,8 @@ public final class WorkoutNotificationManager: @unchecked Sendable {
         content.title = "Descanso Concluído! ⏱️"
         content.body = "Hora de iniciar a Série \(nextSet) de \(exerciseName)!"
         content.sound = .default
+        content.interruptionLevel = .timeSensitive
+        content.relevanceScore = 1.0
         
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(seconds), repeats: false)
         let request = UNNotificationRequest(

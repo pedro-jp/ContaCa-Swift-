@@ -2,18 +2,17 @@
 //  ActiveWorkoutSessionView.swift
 //  ContaCa
 //
-//  Created by João Pedro on 10/29/26.
+//  Sessão imersiva de treino ao vivo sincronizada em tempo real com a Ilha Dinâmica e Apple Saúde.
 //
 
 import SwiftUI
 import SwiftData
 import Combine
 
-/// Tela imersiva de auxílio durante o treino: cronômetro ao vivo, checklist interativo de séries e timer de descanso para hipertrofia
 struct ActiveWorkoutSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    
+
     let title: String
     let workoutType: WorkoutType
     let targetMuscles: String
@@ -22,35 +21,25 @@ struct ActiveWorkoutSessionView: View {
     let baseDurationMinutes: Int
     let initialRestSeconds: Int
     let routineToUpdate: WorkoutRoutine?
-    
+
     @State private var exercises: [WorkoutExerciseItem]
-    
-    // Início da Sessão para a Ilha Dinâmica (Base comum de contagem)
     @State private var sessionStartDate: Date = Date()
     @State private var currentExerciseIndex: Int = 0
-    
-    // Cronômetro da Sessão
     @State private var elapsedSeconds: Int = 0
-    @State private var isSessionRunning: Bool = true
-    
-    // Cronômetro de Descanso (Rest Timer com referência de datas)
+
     @State private var restStartDate: Date? = nil
     @State private var restEndDate: Date? = nil
     @State private var restTimeRemaining: Int = 0
     @State private var restTimeTotal: Int = 90
     @State private var isRestTimerActive: Bool = false
-    
-    // Feedback de Finalização
+
     @State private var showFinishConfirmation: Bool = false
     @State private var showCancelConfirmation: Bool = false
-    @State private var isCompletedAndSaved: Bool = false
-    @State private var expandedExerciseTipId: UUID? = nil
-    
-    // Catálogo de Execução & GIFs
+
     @State private var selectedCatalogItemForDetail: ExerciseCatalogItem? = nil
     @State private var showCatalogSheet: Bool = false
     @State private var exerciseIndexToLink: Int? = nil
-    
+
     init(
         title: String,
         workoutType: WorkoutType = .bodybuilding,
@@ -73,65 +62,83 @@ struct ActiveWorkoutSessionView: View {
         _exercises = State(initialValue: exercises)
         _restTimeTotal = State(initialValue: initialRestSeconds > 0 ? initialRestSeconds : 90)
     }
-    
-    // Totais do Checklist
+
     private var totalSetsCount: Int {
         exercises.reduce(0) { $0 + $1.sets }
     }
-    
+
     private var completedSetsCount: Int {
         exercises.reduce(0) { $0 + $1.completedCount }
     }
-    
+
     private var progressPercentage: Double {
         guard totalSetsCount > 0 else { return 0.0 }
         return Double(completedSetsCount) / Double(totalSetsCount)
     }
-    
-    // Estimativa de queima calórica dinâmica conforme tempo decorrido
+
     private var liveEstimatedCalories: Double {
         let minutes = max(1.0, Double(elapsedSeconds) / 60.0)
         let ratePerMinute = baseCalories / max(10.0, Double(baseDurationMinutes))
         return (minutes * ratePerMinute).rounded()
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemGroupedBackground)
+                FormaTheme.Colors.pageBackground
                     .ignoresSafeArea()
-                
+
                 VStack(spacing: 0) {
-                    // Barra de Progresso e Métricas no Topo
                     sessionHeaderView
-                    
-                    // Card Flutuante de Descanso de Hipertrofia (Rest Timer)
+
                     if isRestTimerActive {
-                        restTimerCard
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                        ActiveRestTimerBanner(
+                            restStartDate: restStartDate,
+                            restEndDate: restEndDate,
+                            restTimeRemaining: restTimeRemaining,
+                            restTimeTotal: restTimeTotal,
+                            onAdjustSeconds: { delta in adjustRestSeconds(delta) },
+                            onSkip: { stopRestTimer() }
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    
-                    // Lista de Exercícios e Séries (Checklist)
+
                     ScrollView {
                         VStack(spacing: 16) {
-                            // Foco de Hipertrofia
                             if !hypertrophyFocus.isEmpty || !targetMuscles.isEmpty {
                                 hypertrophyInfoBanner
                             }
-                            
-                            // Exercícios
+
                             ForEach(exercises.indices, id: \.self) { exIndex in
-                                exerciseCard(exerciseIndex: exIndex)
+                                ActiveExerciseCard(
+                                    exercise: exercises[exIndex],
+                                    onOpenInfo: {
+                                        let ex = exercises[exIndex]
+                                        let catalogItem = ExerciseCatalog.shared.item(withId: ex.animationId)
+                                            ?? ExerciseCatalog.shared.findBestMatch(for: ex.name)
+                                        if let item = catalogItem {
+                                            selectedCatalogItemForDetail = item
+                                        } else {
+                                            exerciseIndexToLink = exIndex
+                                            showCatalogSheet = true
+                                        }
+                                    },
+                                    onToggleSet: { setIndex in
+                                        toggleSetCompletion(exerciseIndex: exIndex, setIndex: setIndex)
+                                    }
+                                )
                             }
-                            
-                            // Botão de Conclusão no final da lista
+
                             finishWorkoutButton
-                                .padding(.top, 10)
+                                .padding(.top, 8)
                                 .padding(.bottom, 40)
                         }
                         .padding(.horizontal, 16)
                         .padding(.top, 16)
                     }
+                    .scrollIndicators(.hidden)
                 }
             }
             .navigationTitle("Treino em Andamento")
@@ -141,15 +148,15 @@ struct ActiveWorkoutSessionView: View {
                     Button("Sair") {
                         showCancelConfirmation = true
                     }
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Finalizar") {
                         showFinishConfirmation = true
                     }
                     .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(Color("AccentColor"))
+                    .foregroundStyle(FormaTheme.Colors.brand)
                 }
             }
             .confirmationDialog(
@@ -157,12 +164,12 @@ struct ActiveWorkoutSessionView: View {
                 isPresented: $showFinishConfirmation,
                 titleVisibility: .visible
             ) {
-                Button("Concluir e Salvar no App", role: .none) {
+                Button("Concluir e Salvar no App") {
                     finishAndSaveWorkout()
                 }
                 Button("Continuar Treinando", role: .cancel) {}
             } message: {
-                Text("Você completou \(completedSetsCount) de \(totalSetsCount) séries em \(formatTime(elapsedSeconds)). O gasto de ~\(Int(liveEstimatedCalories)) kcal será registrado no seu histórico e no app Saúde.")
+                Text("Você completou \(completedSetsCount) de \(totalSetsCount) séries em \(formatTime(elapsedSeconds)). O gasto de ~\(Int(liveEstimatedCalories)) kcal será salvo no histórico e no Apple Saúde.")
             }
             .confirmationDialog(
                 "Deseja descartar este treino?",
@@ -200,9 +207,8 @@ struct ActiveWorkoutSessionView: View {
                 syncFromSharedSession()
             }
             .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
-                self.elapsedSeconds = max(0, Int(Date().timeIntervalSince(sessionStartDate)))
-                
-                // Sincroniza se houve alteração na Ilha Dinâmica (séries feitas, descanso alterado, etc)
+                elapsedSeconds = max(0, Int(Date().timeIntervalSince(sessionStartDate)))
+
                 if let shared = SharedWorkoutSessionManager.shared.loadSession() {
                     if shared.isFinished {
                         finishAndSaveWorkout()
@@ -212,59 +218,59 @@ struct ActiveWorkoutSessionView: View {
                         syncFromSharedSession()
                     }
                 }
-                
-                // Conclui o descanso se o tempo expirou
+
                 if isRestTimerActive, let end = restEndDate {
                     let remaining = Int(end.timeIntervalSinceNow)
                     if remaining <= 0 {
                         stopRestTimer()
                         WorkoutNotificationManager.shared.triggerRestFinishedHapticsAndSound()
                     } else {
-                        self.restTimeRemaining = remaining
+                        restTimeRemaining = remaining
                     }
                 }
             }
         }
     }
-    
-    // MARK: - Subviews
-    
+
     private var sessionHeaderView: some View {
         VStack(spacing: 10) {
-            HStack {
+            HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .foregroundColor(Color("FontNormal"))
+                        .foregroundStyle(FormaTheme.Colors.primaryText)
                         .lineLimit(1)
-                    
+
                     HStack(spacing: 6) {
                         Label(workoutType.rawValue, systemImage: workoutType.icon)
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Color("AccentColor"))
-                        
-                        Text("•")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                        
-                        Text("\(completedSetsCount)/\(totalSetsCount) séries feitas")
+                            .foregroundStyle(FormaTheme.Colors.brand)
+
+                        Text("•").font(.system(size: 11)).foregroundStyle(.secondary)
+
+                        Text("\(completedSetsCount)/\(totalSetsCount) séries")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
+
+                        Text("•").font(.system(size: 11)).foregroundStyle(.secondary)
+
+                        Text("~\(Int(liveEstimatedCalories)) kcal")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundStyle(FormaTheme.Colors.energyGreen)
                     }
                 }
-                
+
                 Spacer()
-                
-                // Cronômetro da Sessão (100% idêntico à Ilha Dinâmica, via Text style: .timer)
+
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(Color("AccentGreen"))
+                        .fill(FormaTheme.Colors.energyGreen)
                         .frame(width: 8, height: 8)
-                    
+
                     Text(sessionStartDate, style: .timer)
                         .font(.system(size: 18, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                        .foregroundColor(Color("FontNormal"))
+                        .foregroundStyle(FormaTheme.Colors.primaryText)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -272,274 +278,44 @@ struct ActiveWorkoutSessionView: View {
                 .clipShape(Capsule())
                 .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 1)
             }
-            
-            // Barra de Progresso do Checklist
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.gray.opacity(0.15))
-                        .frame(height: 6)
-                    
-                    Capsule()
-                        .fill(Color("AccentColor"))
-                        .frame(width: max(0, geo.size.width * progressPercentage), height: 6)
-                        .animation(.spring(duration: 0.3), value: progressPercentage)
-                }
-            }
-            .frame(height: 6)
+
+            FormaProgressBar(value: progressPercentage, total: 1.0, color: FormaTheme.Colors.brand, height: 6)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
-        .background(Color("CardBackground"))
+        .background(FormaTheme.Colors.cardSurface)
         .shadow(color: Color.black.opacity(0.03), radius: 6, x: 0, y: 2)
     }
-    
-    // Banner de Hipertrofia
+
     private var hypertrophyInfoBanner: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !targetMuscles.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "figure.strengthtraining.traditional")
-                        .font(.system(size: 12))
-                        .foregroundColor(Color("AccentColor"))
-                    Text(targetMuscles)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color("FontNormal"))
-                }
-            }
-            
-            if !hypertrophyFocus.isEmpty {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "flame.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(.orange)
-                    Text(hypertrophyFocus)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color("AccentColor").opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-    
-    // Card de Descanso Inteligente (Rest Timer)
-    private var restTimerCard: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .stroke(Color.gray.opacity(0.2), lineWidth: 3)
-                    .frame(width: 44, height: 44)
-                
-                Circle()
-                    .trim(from: 0, to: restTimeTotal > 0 ? CGFloat(restTimeRemaining) / CGFloat(restTimeTotal) : 0)
-                    .stroke(Color("AccentGreen"), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .frame(width: 44, height: 44)
-                    .rotationEffect(.degrees(-90))
-                    .animation(.linear(duration: 1.0), value: restTimeRemaining)
-                
-                Image(systemName: "timer")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(Color("AccentGreen"))
-            }
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Descanso de Hipertrofia")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(Color("FontNormal"))
-                
-                if let start = restStartDate, let end = restEndDate {
-                    Text(timerInterval: start...end, countsDown: true)
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundColor(Color("AccentGreen"))
-                } else {
-                    Text(formatRestTime(restTimeRemaining))
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundColor(Color("AccentGreen"))
-                }
-            }
-            
-            Spacer()
-            
-            HStack(spacing: 6) {
-                Button("+30s") {
-                    addRestSeconds(30)
-                }
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(Color("FontNormal"))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.gray.opacity(0.12))
-                .clipShape(Capsule())
-                
-                Button("Pular") {
-                    stopRestTimer()
-                }
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(.red.opacity(0.8))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.red.opacity(0.08))
-                .clipShape(Capsule())
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color("CardBackground"))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 3)
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-    }
-    
-    // Cartão de Exercício com Séries Interativas
-    private func exerciseCard(exerciseIndex: Int) -> some View {
-        let exercise = exercises[exerciseIndex]
-        let isTipExpanded = expandedExerciseTipId == exercise.id
-        
-        return VStack(alignment: .leading, spacing: 12) {
-            // Header do Exercício
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(exercise.name)
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundColor(Color("FontNormal"))
-                    
+        FormaTintedCard(tint: FormaTheme.Colors.brand, padding: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                if !targetMuscles.isEmpty {
                     HStack(spacing: 6) {
-                        if !exercise.targetMuscle.isEmpty {
-                            Text(exercise.targetMuscle)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(Color("AccentColor"))
-                            Text("•")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Text("\(exercise.sets) séries")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.secondary)
-                        
-                        Text("•")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                        
-                        Text("\(exercise.reps) reps")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                        
-                        if !exercise.suggestedWeight.isEmpty {
-                            Text("•")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                            Text(exercise.suggestedWeight)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(Color("FontNormal"))
-                        }
+                        Image(systemName: "figure.strengthtraining.traditional")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FormaTheme.Colors.brand)
+                        Text(targetMuscles)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(FormaTheme.Colors.primaryText)
                     }
                 }
-                
-                Spacer()
-                
-                // Botão de Info do Exercício (Abre GIF em alta resolução e biomecânica)
-                Button {
-                    let catalogItem = ExerciseCatalog.shared.item(withId: exercise.animationId) ?? ExerciseCatalog.shared.findBestMatch(for: exercise.name)
-                    if let item = catalogItem {
-                        selectedCatalogItemForDetail = item
-                    } else {
-                        exerciseIndexToLink = exerciseIndex
-                        showCatalogSheet = true
+
+                if !hypertrophyFocus.isEmpty {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(FormaTheme.Colors.warning)
+                        Text(hypertrophyFocus)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                     }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "info.circle.fill")
-                            .font(.system(size: 15))
-                        Text("Info")
-                            .font(.system(size: 11, weight: .bold))
-                    }
-                    .foregroundColor(Color("AccentColor"))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(Color("AccentColor").opacity(0.1))
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            
-            Divider()
-                .background(Color.primary.opacity(0.06))
-            
-            // Checklist de Séries
-            VStack(spacing: 8) {
-                ForEach(0..<exercise.sets, id: \.self) { setIndex in
-                    let isDone = setIndex < exercise.completedSets.count ? exercise.completedSets[setIndex] : false
-                    
-                    HStack {
-                        // Número da Série
-                        Text("Série \(setIndex + 1)")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(isDone ? .secondary : Color("FontNormal"))
-                            .frame(width: 60, alignment: .leading)
-                        
-                        // Meta de Repetições
-                        Text(exercise.reps)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        
-                        // Descanso sugerido
-                        HStack(spacing: 3) {
-                            Image(systemName: "clock")
-                                .font(.system(size: 10))
-                            Text("\(exercise.restSeconds)s")
-                                .font(.system(size: 11))
-                        }
-                        .foregroundColor(.secondary)
-                        .frame(width: 50, alignment: .trailing)
-                        
-                        // Checkmark Interativo
-                        Button {
-                            toggleSetCompletion(exerciseIndex: exerciseIndex, setIndex: setIndex)
-                        } label: {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(isDone ? Color("AccentColor") : Color.gray.opacity(0.12))
-                                    .frame(width: 36, height: 36)
-                                
-                                if isDone {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 14, weight: .bold))
-                                        .foregroundColor(.white)
-                                } else {
-                                    Circle()
-                                        .stroke(Color.gray.opacity(0.3), lineWidth: 1.5)
-                                        .frame(width: 16, height: 16)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(isDone ? Color("AccentColor").opacity(0.06) : Color(.systemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .background(Color("CardBackground"))
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .shadow(color: Color.black.opacity(0.03), radius: 8, x: 0, y: 2)
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(exercise.isAllSetsCompleted ? Color("AccentColor").opacity(0.3) : Color.primary.opacity(0.05), lineWidth: 1)
-        )
     }
-    
-    // Botão Concluir Treino
+
     private var finishWorkoutButton: some View {
         Button {
             showFinishConfirmation = true
@@ -548,19 +324,20 @@ struct ActiveWorkoutSessionView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 16, weight: .bold))
                 Text("Concluir Treino (\(completedSetsCount)/\(totalSetsCount) séries)")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
             }
-            .foregroundColor(.white)
+            .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 15)
-            .background(Color("AccentColor"))
+            .background(FormaTheme.Colors.brand)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: Color("AccentColor").opacity(0.25), radius: 8, x: 0, y: 4)
+            .shadow(color: FormaTheme.Colors.brand.opacity(0.25), radius: 8, x: 0, y: 4)
         }
+        .buttonStyle(.plain)
     }
-    
-    // MARK: - Ações e Lógica
-    
+
+    // MARK: - Ações e Sincronização com Ilha Dinâmica
+
     private func toggleSetCompletion(exerciseIndex: Int, setIndex: Int) {
         guard exerciseIndex < exercises.count else { return }
         currentExerciseIndex = exerciseIndex
@@ -568,17 +345,15 @@ struct ActiveWorkoutSessionView: View {
         while currentSets.count < exercises[exerciseIndex].sets {
             currentSets.append(false)
         }
-        
+
         let willBeDone = !currentSets[setIndex]
         currentSets[setIndex] = willBeDone
         exercises[exerciseIndex].completedSets = currentSets
-        
+
         if willBeDone {
-            // Haptic de sucesso ao completar a série
             let feedback = UIImpactFeedbackGenerator(style: .medium)
             feedback.impactOccurred()
-            
-            // Determina a próxima série a ser realizada (corrige o bug da série anterior)
+
             let nextSetForRest: Int
             let nextExerciseNameForRest: String
             let nextTotalSetsForRest: Int
@@ -596,25 +371,27 @@ struct ActiveWorkoutSessionView: View {
                 nextExerciseNameForRest = exercises[exerciseIndex].name
                 nextTotalSetsForRest = exercises[exerciseIndex].sets
             }
-            
-            // Inicia o Rest Timer com a próxima série correta
+
             let targetRest = exercises[exerciseIndex].restSeconds > 0 ? exercises[exerciseIndex].restSeconds : initialRestSeconds
             startRestTimer(seconds: targetRest, exerciseName: nextExerciseNameForRest, currentSet: nextSetForRest, totalSets: nextTotalSetsForRest)
         } else {
             updateLiveActivity(isResting: false)
         }
-        
+
         saveCurrentStateToShared()
     }
-    
+
     private func saveCurrentStateToShared() {
         let isAllDone = exercises.allSatisfy { $0.isAllSetsCompleted }
+        let safeIndex = min(max(0, currentExerciseIndex), max(0, exercises.count - 1))
+        let currentSetIdx = exercises.isEmpty ? 0 : max(0, exercises[safeIndex].completedCount)
+
         let sharedState = SharedWorkoutState(
             title: title,
             workoutTypeRaw: workoutType.rawValue,
             exercises: exercises,
-            currentExerciseIndex: currentExerciseIndex,
-            currentSetIndex: max(0, exercises[currentExerciseIndex].completedCount),
+            currentExerciseIndex: safeIndex,
+            currentSetIndex: currentSetIdx,
             sessionStartDate: sessionStartDate,
             baseCalories: baseCalories,
             baseDurationMinutes: baseDurationMinutes,
@@ -626,40 +403,38 @@ struct ActiveWorkoutSessionView: View {
         )
         SharedWorkoutSessionManager.shared.saveSession(sharedState)
     }
-    
+
     private func syncFromSharedSession() {
         guard let shared = SharedWorkoutSessionManager.shared.loadSession() else { return }
-        self.exercises = shared.exercises
-        self.currentExerciseIndex = shared.currentExerciseIndex
-        self.sessionStartDate = shared.sessionStartDate
-        self.elapsedSeconds = max(0, Int(Date().timeIntervalSince(shared.sessionStartDate)))
+        exercises = shared.exercises
+        currentExerciseIndex = shared.currentExerciseIndex
+        sessionStartDate = shared.sessionStartDate
+        elapsedSeconds = max(0, Int(Date().timeIntervalSince(shared.sessionStartDate)))
         if shared.isResting, let end = shared.restEndDate {
             let rem = Int(end.timeIntervalSinceNow)
             if rem > 0 {
-                self.restStartDate = shared.restStartDate
-                self.restEndDate = shared.restEndDate
-                self.restTimeRemaining = rem
-                self.restTimeTotal = shared.restDurationSeconds
-                withAnimation { self.isRestTimerActive = true }
+                restStartDate = shared.restStartDate
+                restEndDate = shared.restEndDate
+                restTimeRemaining = rem
+                restTimeTotal = shared.restDurationSeconds
+                withAnimation { isRestTimerActive = true }
             } else {
-                withAnimation { self.isRestTimerActive = false }
-                self.restStartDate = nil
-                self.restEndDate = nil
+                withAnimation { isRestTimerActive = false }
+                restStartDate = nil
+                restEndDate = nil
             }
         } else {
-            withAnimation { self.isRestTimerActive = false }
-            self.restStartDate = nil
-            self.restEndDate = nil
+            withAnimation { isRestTimerActive = false }
+            restStartDate = nil
+            restEndDate = nil
         }
     }
-    
+
     private func startNewSession() {
         sessionStartDate = Date()
         elapsedSeconds = 0
-        
         saveCurrentStateToShared()
-        
-        // Inicia na Ilha Dinâmica com a exata sessionStartDate
+
         let firstExName = exercises.first?.name ?? "Treino"
         let firstSets = exercises.first?.sets ?? 3
         LiveActivityManager.shared.startWorkoutActivity(
@@ -676,7 +451,7 @@ struct ActiveWorkoutSessionView: View {
             isAllCompleted: false
         )
     }
-    
+
     private func startRestTimer(seconds: Int, exerciseName: String, currentSet: Int, totalSets: Int) {
         let now = Date()
         let end = now.addingTimeInterval(Double(seconds))
@@ -687,17 +462,15 @@ struct ActiveWorkoutSessionView: View {
         withAnimation(.spring(duration: 0.3)) {
             isRestTimerActive = true
         }
-        
+
         saveCurrentStateToShared()
-        
-        // Agenda notificação Time-Sensitive que vibra e acende a tela mesmo com o celular desligado/bloqueado
+
         WorkoutNotificationManager.shared.scheduleRestNotification(
             seconds: seconds,
             exerciseName: exerciseName,
             nextSet: currentSet
         )
-        
-        // Atualiza na Ilha Dinâmica com o exato mesmo intervalo regressivo
+
         LiveActivityManager.shared.updateWorkoutActivity(
             workoutTitle: title,
             currentExerciseName: exerciseName,
@@ -713,7 +486,7 @@ struct ActiveWorkoutSessionView: View {
             restDurationSeconds: seconds
         )
     }
-    
+
     private func stopRestTimer() {
         withAnimation(.spring(duration: 0.3)) {
             isRestTimerActive = false
@@ -724,17 +497,22 @@ struct ActiveWorkoutSessionView: View {
         saveCurrentStateToShared()
         updateLiveActivity(isResting: false)
     }
-    
-    private func addRestSeconds(_ seconds: Int) {
+
+    private func adjustRestSeconds(_ deltaSeconds: Int) {
         guard isRestTimerActive else { return }
         let currentEnd = restEndDate ?? Date()
-        let newEnd = currentEnd.addingTimeInterval(Double(seconds))
+        let newEnd = currentEnd.addingTimeInterval(Double(deltaSeconds))
+        let remaining = Int(newEnd.timeIntervalSinceNow)
+        if remaining <= 1 {
+            stopRestTimer()
+            return
+        }
+
         restEndDate = newEnd
-        restTimeTotal += seconds
-        let remaining = max(0, Int(newEnd.timeIntervalSinceNow))
+        restTimeTotal = max(remaining, restTimeTotal + deltaSeconds)
         restTimeRemaining = remaining
         saveCurrentStateToShared()
-        
+
         let currentEx = currentExerciseIndex < exercises.count ? exercises[currentExerciseIndex] : (exercises.first ?? WorkoutExerciseItem(name: "Treino"))
         let activeSetNumber = min(currentEx.sets, max(1, currentEx.completedCount + 1))
         WorkoutNotificationManager.shared.scheduleRestNotification(
@@ -742,7 +520,7 @@ struct ActiveWorkoutSessionView: View {
             exerciseName: currentEx.name,
             nextSet: activeSetNumber
         )
-        
+
         LiveActivityManager.shared.updateWorkoutActivity(
             workoutTitle: title,
             currentExerciseName: currentEx.name,
@@ -758,7 +536,7 @@ struct ActiveWorkoutSessionView: View {
             restDurationSeconds: restTimeTotal
         )
     }
-    
+
     private func updateLiveActivity(isResting: Bool) {
         let currentEx = currentExerciseIndex < exercises.count ? exercises[currentExerciseIndex] : (exercises.first ?? WorkoutExerciseItem(name: "Treino"))
         let activeSetNumber = min(currentEx.sets, max(1, currentEx.completedCount + 1))
@@ -777,7 +555,7 @@ struct ActiveWorkoutSessionView: View {
             restDurationSeconds: restTimeTotal
         )
     }
-    
+
     private func stopAllTimers() {
         isRestTimerActive = false
         restStartDate = nil
@@ -786,15 +564,15 @@ struct ActiveWorkoutSessionView: View {
         SharedWorkoutSessionManager.shared.clearSession()
         LiveActivityManager.shared.endWorkoutActivity()
     }
-    
+
     private func finishAndSaveWorkout() {
         stopAllTimers()
-        
+
         let finalSeconds = max(0, Int(Date().timeIntervalSince(sessionStartDate)))
         let finalDuration = max(1, finalSeconds / 60)
         let finalCalories = liveEstimatedCalories
         let workoutNotes = "Checklist: \(completedSetsCount) de \(totalSetsCount) séries concluídas em \(formatTime(finalSeconds))."
-        
+
         let entry = WorkoutEntry(
             title: title,
             workoutType: workoutType,
@@ -803,35 +581,22 @@ struct ActiveWorkoutSessionView: View {
             date: Date(),
             notes: workoutNotes
         )
-        
-        // 1. Salva no SwiftData e sincroniza com Apple Health
+
         try? ContaCaDataStore.shared.insertWorkoutEntry(entry)
-        
-        // 2. Atualiza data da rotina se aplicável
+
         if let routine = routineToUpdate {
             routine.lastTrainedAt = Date()
             try? modelContext.save()
         }
-        
+
         let generator = UINotificationFeedbackGenerator()
         generator.notificationOccurred(.success)
-        
         dismiss()
     }
-    
+
     private func formatTime(_ totalSeconds: Int) -> String {
         let mins = totalSeconds / 60
         let secs = totalSeconds % 60
         return String(format: "%02d:%02d", mins, secs)
-    }
-    
-    private func formatRestTime(_ totalSeconds: Int) -> String {
-        let mins = totalSeconds / 60
-        let secs = totalSeconds % 60
-        if mins > 0 {
-            return String(format: "%d:%02d", mins, secs)
-        } else {
-            return "\(secs)s"
-        }
     }
 }

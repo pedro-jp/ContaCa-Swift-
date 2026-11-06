@@ -122,6 +122,40 @@ public struct AIExtractedMeal: Codable, Sendable {
         case totalFat = "total_fat"
         case aiSummary = "ai_summary"
     }
+    
+    public init(
+        mealType: String,
+        items: [AIExtractedFoodItem],
+        totalCalories: Double,
+        totalProtein: Double,
+        totalCarbs: Double,
+        totalFat: Double,
+        aiSummary: String = ""
+    ) {
+        self.mealType = mealType
+        self.items = items
+        self.totalCalories = totalCalories
+        self.totalProtein = totalProtein
+        self.totalCarbs = totalCarbs
+        self.totalFat = totalFat
+        self.aiSummary = aiSummary
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedItems = try container.decodeIfPresent([AIExtractedFoodItem].self, forKey: .items) ?? []
+        self.items = decodedItems
+        self.mealType = try container.decodeIfPresent(String.self, forKey: .mealType) ?? "Almoço"
+        self.totalCalories = try container.decodeIfPresent(Double.self, forKey: .totalCalories)
+            ?? decodedItems.reduce(0.0) { $0 + $1.calories }
+        self.totalProtein = try container.decodeIfPresent(Double.self, forKey: .totalProtein)
+            ?? decodedItems.reduce(0.0) { $0 + $1.protein }
+        self.totalCarbs = try container.decodeIfPresent(Double.self, forKey: .totalCarbs)
+            ?? decodedItems.reduce(0.0) { $0 + $1.carbohydrates }
+        self.totalFat = try container.decodeIfPresent(Double.self, forKey: .totalFat)
+            ?? decodedItems.reduce(0.0) { $0 + $1.fat }
+        self.aiSummary = try container.decodeIfPresent(String.self, forKey: .aiSummary) ?? ""
+    }
 }
 
 public struct AIExtractedWorkout: Codable, Sendable {
@@ -275,7 +309,7 @@ public struct AIRecommendedRoutine: Codable, Sendable {
     
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? "Treino Personalizado IA"
+        self.title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? "Treino Personalizado"
         self.workoutType = (try? container.decodeIfPresent(String.self, forKey: .workoutType)) ?? "Musculação"
         self.targetMuscles = (try? container.decodeIfPresent(String.self, forKey: .targetMuscles)) ?? ""
         self.hypertrophyFocus = (try? container.decodeIfPresent(String.self, forKey: .hypertrophyFocus)) ?? ""
@@ -465,12 +499,48 @@ public final class GeminiAIService: ObservableObject {
         )
         
         guard let data = responseJson.data(using: .utf8) else {
-            throw NSError(domain: "GeminiAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta inválida da IA"])
+            throw NSError(domain: "GeminiAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta inválida da Inteligência Forma"])
         }
         
         let decoded = try JSONDecoder().decode(AIExtractedMeal.self, from: data)
         mealCache[cacheKey] = decoded
         return decoded
+    }
+    
+    /// Analisa foto do prato, bebida ou tabela nutricional usando visão multimodal do Gemini
+    public func analyzeMealImage(
+        imageData: Data,
+        mimeType: String = "image/jpeg",
+        additionalContext: String = ""
+    ) async throws -> AIExtractedMeal {
+        guard !imageData.isEmpty else {
+            throw NSError(domain: "GeminiAI", code: 400, userInfo: [NSLocalizedDescriptionKey: "Imagem inválida ou vazia"])
+        }
+        
+        isLoading = true
+        lastErrorMessage = nil
+        defer { isLoading = false }
+        
+        try await checkAndRecordRateLimit()
+        
+        let base64String = imageData.base64EncodedString()
+        let trimmedNote = additionalContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let responseJson = try await sendBackendAiRequest(
+            path: "analyze-meal",
+            body: [
+                "description": trimmedNote,
+                "userName": currentUserName,
+                "imageBase64": base64String,
+                "imageMimeType": mimeType
+            ]
+        )
+        
+        guard let data = responseJson.data(using: .utf8) else {
+            throw NSError(domain: "GeminiAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta inválida da Inteligência Forma"])
+        }
+        
+        return try JSONDecoder().decode(AIExtractedMeal.self, from: data)
     }
     
     // MARK: - 2. Análise de Treinos e Queima Calórica com Gemini AI
@@ -505,7 +575,7 @@ public final class GeminiAIService: ObservableObject {
         )
         
         guard let data = responseJson.data(using: .utf8) else {
-            throw NSError(domain: "GeminiAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta inválida da IA"])
+            throw NSError(domain: "GeminiAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta inválida da Inteligência Forma"])
         }
         
         var decoded = try JSONDecoder().decode(AIExtractedWorkout.self, from: data)
@@ -528,18 +598,25 @@ public final class GeminiAIService: ObservableObject {
         AppActivityLogManager.shared.syncFromDatabase(foods: foods, workouts: workouts, waters: waters, weights: weights)
         let activityLogJson = AppActivityLogManager.shared.exportRecentLogForAI(days: 14)
         
-        let calendar = Calendar.current
-        let now = Date()
-        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: now) ?? now
-        
-        let recentFoods = foods.filter { $0.date >= sevenDaysAgo }
-        let recentWorkouts = workouts.filter { $0.date >= sevenDaysAgo }
-        let recentWaters = waters.filter { $0.date >= sevenDaysAgo }
-        
-        let userGoal = profile?.goal.rawValue ?? "Ganhar peso"
-        let currentWeight = weights.first?.weight ?? (profile?.currentWeight ?? 72.0)
+        let goalEnum = profile?.goal ?? .gain
+        let userGoal = goalEnum.rawValue
+        let currentWeight = (profile?.currentWeight ?? 0) > 0 ? (profile?.currentWeight ?? 72.0) : (weights.first?.weight ?? 72.0)
         let targetWeight = profile?.targetWeight ?? 80.0
-        let targetCalories = profile?.targetCalorieIntake ?? 2800.0
+        let heightMeters = profile?.height ?? 1.78
+        let targetBurn = profile?.targetCalorieBurn ?? 600.0
+        let targetSteps = profile?.targetSteps ?? 8000.0
+        
+        let recalcContext = ContaCaDataStore.shared.buildRecalculationContext()
+        let contextualMetrics = Profile.computeContextualTargets(
+            weight: currentWeight,
+            height: heightMeters,
+            targetWeight: targetWeight,
+            goal: goalEnum,
+            targetCalorieBurn: targetBurn,
+            targetSteps: targetSteps,
+            context: recalcContext
+        )
+        let targetCalories = profile?.targetCalorieIntake ?? contextualMetrics.suggestedCalories
         
         let responseJson = try await sendBackendAiRequest(
             path: "analyze-evolution",
@@ -547,13 +624,24 @@ public final class GeminiAIService: ObservableObject {
                 "userGoal": userGoal,
                 "currentWeight": currentWeight,
                 "targetWeight": targetWeight,
+                "heightMeters": heightMeters,
                 "targetCalories": targetCalories,
+                "targetCalorieBurn": targetBurn,
+                "targetSteps": targetSteps,
+                "calculatedTmb": contextualMetrics.tmb,
+                "contextualTdee": contextualMetrics.contextualTdee,
+                "suggestedBaseCalories": contextualMetrics.suggestedCalories,
+                "suggestedProtein": contextualMetrics.proteinGrams,
+                "suggestedCarbs": contextualMetrics.carbsGrams,
+                "suggestedFat": contextualMetrics.fatGrams,
+                "suggestedWaterMl": contextualMetrics.waterMilliliters,
+                "avgDailyWorkoutBurn": recalcContext.avgDailyWorkoutBurn,
                 "activityLogJson": activityLogJson,
                 "userName": currentUserName
             ]
         )
         guard let data = responseJson.data(using: .utf8) else {
-            throw NSError(domain: "GeminiAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta inválida da IA"])
+            throw NSError(domain: "GeminiAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta inválida da Inteligência Forma"])
         }
         
         var decoded = try JSONDecoder().decode(EvolutionAIAnalysis.self, from: data)
@@ -570,66 +658,21 @@ public final class GeminiAIService: ObservableObject {
     // MARK: - Comunicação HTTP Segura via Backend Java (Proxy de IA)
     
     private func sendBackendAiRequest(path: String, body: [String: Any]) async throws -> String {
-        let baseUrl = AuthManager.shared.serverBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        var cleanBase = baseUrl
-        if cleanBase.hasSuffix("/") {
-            cleanBase = String(cleanBase.dropLast())
+        let data = try await FormaAPIClient.shared.requestData(
+            path: "/api/ai/\(path)",
+            method: "POST",
+            jsonBody: body,
+            authenticated: true,
+            timeout: 60.0
+        )
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else {
+            throw FormaAPIError.serverError(statusCode: 500, message: "Resposta vazia da Inteligência Forma.")
         }
-        
-        guard let url = URL(string: "\(cleanBase)/api/ai/\(path)") else {
-            throw NSError(domain: "BackendAI", code: 400, userInfo: [NSLocalizedDescriptionKey: "URL do backend inválida"])
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 45.0
-        
-        if let token = AuthManager.shared.jwtToken {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let userId = AuthManager.shared.currentUserId {
-            request.setValue(userId, forHTTPHeaderField: "X-User-Id")
-        }
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            throw NSError(
-                domain: "BackendAI",
-                code: -1004,
-                userInfo: [NSLocalizedDescriptionKey: "Não foi possível conectar ao backend ContaCa (\(cleanBase)). Inicie o servidor Java ou verifique o endereço configurado."]
-            )
-        }
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw NSError(domain: "BackendAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Sem resposta do servidor"])
-        }
-        
-        if httpResponse.statusCode == 429 {
-            throw NSError(domain: "BackendAI", code: 429, userInfo: [NSLocalizedDescriptionKey: "Limite de requisições por minuto atingido. Tente novamente em alguns segundos."])
-        }
-        
-        guard httpResponse.statusCode == 200 else {
-            var msg = "Erro no servidor IA (\(httpResponse.statusCode))"
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let err = json["error"] as? String {
-                msg = err
-            } else if let text = String(data: data, encoding: .utf8), !text.isEmpty {
-                msg = text
-            }
-            throw NSError(domain: "BackendAI", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: msg])
-        }
-        
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw NSError(domain: "BackendAI", code: 500, userInfo: [NSLocalizedDescriptionKey: "Resposta vazia do backend"])
-        }
-        
-        var cleanedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self.stripMarkdownCodeFences(text)
+    }
+
+    public static func stripMarkdownCodeFences(_ raw: String) -> String {
+        var cleanedText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanedText.hasPrefix("```json") {
             cleanedText = String(cleanedText.dropFirst(7))
         } else if cleanedText.hasPrefix("```") {

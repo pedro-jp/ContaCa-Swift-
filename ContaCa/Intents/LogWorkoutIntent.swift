@@ -11,8 +11,8 @@ import WidgetKit
 
 /// Intent da Siri para registrar treinos e gasto calórico de forma direta
 public struct LogWorkoutIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Registrar Treino no ContaCa"
-    public static var description = IntentDescription("Registra seu treino e calcula as calorias gastas automaticamente no ContaCa.")
+    public static var title: LocalizedStringResource = "Registrar Treino no Forma"
+    public static var description = IntentDescription("Registra seu treino e calcula as calorias gastas automaticamente no Forma.")
     public static var openAppWhenRun: Bool = false
     
     @Parameter(

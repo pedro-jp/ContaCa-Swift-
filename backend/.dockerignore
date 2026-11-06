@@ -1,0 +1,12 @@
+target/
+*.mv.db
+*.trace.db
+*.lock.db
+.env
+.env.*
+.DS_Store
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+src/test/

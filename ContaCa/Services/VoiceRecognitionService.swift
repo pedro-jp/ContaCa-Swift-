@@ -22,6 +22,7 @@ public struct VoicePlateItem: Identifiable, Sendable, Equatable {
     public var protein: Double
     public var carbs: Double
     public var fat: Double
+    public var source: String
     
     public var baseCaloriesPer100: Double
     public var baseProteinPer100: Double
@@ -38,7 +39,8 @@ public struct VoicePlateItem: Identifiable, Sendable, Equatable {
         calories: Double,
         protein: Double,
         carbs: Double,
-        fat: Double
+        fat: Double,
+        source: String = "TACO Brasil"
     ) {
         self.id = id
         self.name = name
@@ -51,6 +53,7 @@ public struct VoicePlateItem: Identifiable, Sendable, Equatable {
         self.protein = protein
         self.carbs = carbs
         self.fat = fat
+        self.source = source
         
         let factor = p / 100.0
         self.baseCaloriesPer100 = calories / factor
@@ -76,6 +79,7 @@ public struct VoiceFoodIntent: Sendable, Equatable {
     public var rawText: String
     public var mealType: MealType
     public var items: [VoicePlateItem]
+    public var aiSummary: String = ""
     
     public var totalCalories: Double {
         items.reduce(0.0) { $0 + $1.calories }
@@ -116,11 +120,13 @@ public struct VoiceFoodIntent: Sendable, Equatable {
     public init(
         rawText: String,
         mealType: MealType,
-        items: [VoicePlateItem] = []
+        items: [VoicePlateItem] = [],
+        aiSummary: String = ""
     ) {
         self.rawText = rawText
         self.mealType = mealType
         self.items = items
+        self.aiSummary = aiSummary
     }
     
     public init(
@@ -156,6 +162,14 @@ public struct VoiceFoodIntent: Sendable, Equatable {
     }
 }
 
+/// Fases de carregamento da análise nutricional com transição suave
+public enum AnalysisPhase: String, Sendable, Equatable {
+    case idle
+    case tacoDatabase = "Base Forma"
+    case artificialIntelligence = "Inteligência Forma"
+    case photoVision = "Visão Forma"
+}
+
 /// Modo de escuta por voz
 public enum VoiceListeningMode: Sendable {
     case food
@@ -184,17 +198,23 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
     @Published public var currentIntent: VoiceFoodIntent? = nil
     @Published public var alternativeMatches: [NutritionalFoodItem] = []
     @Published public var isAnalyzing: Bool = false
+    @Published public var analysisPhase: AnalysisPhase = .idle
     @Published public var errorMessage: String? = nil
+    @Published public var selectedMealType: MealType = .lunch
     
     private var audioEngine: AVAudioEngine?
     private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     
+    private var silenceDetectionTask: Task<Void, Never>?
     private var parseDebounceTask: Task<Void, Never>?
     private var activeAnalysisTask: Task<Void, Never>?
     private var currentAnalysisId: Int = 0
+    private var recordingSessionId: Int = 0
+    private var lastAnalyzedSignature: String = ""
     private var lastSpokenTime: Date = Date()
+    private var preferredMealType: MealType? = nil
     
     override public init() {
         super.init()
@@ -260,13 +280,16 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
     // MARK: - Gravação e Reconhecimento
     
     public func startListening(mode: VoiceListeningMode = .food) {
-        stopListening()
+        stopListening(shouldAnalyze: false)
         self.listeningMode = mode
+        self.recordingSessionId += 1
+        let sessionId = self.recordingSessionId
         
         errorMessage = nil
         recognizedText = ""
         currentIntent = nil
         alternativeMatches = []
+        lastAnalyzedSignature = ""
         audioLevel = 0.0
         
         let audioSession = AVAudioSession.sharedInstance()
@@ -289,19 +312,11 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
         let inputNode = engine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-            self?.recognitionRequest?.append(buffer)
-            
-            guard let channelData = buffer.floatChannelData?[0] else { return }
-            let frameLength = UInt(buffer.frameLength)
-            var sum: Float = 0.0
-            for i in 0..<Int(frameLength) {
-                let sample = channelData[i]
-                sum += sample * sample
-            }
-            let rms = sqrt(sum / Float(frameLength))
-            let level = min(max(rms * 10.0, 0.05), 1.0)
-            
+        Self.installRealtimeAudioTap(
+            on: inputNode,
+            format: recordingFormat,
+            request: request
+        ) { [weak self] level in
             Task { @MainActor [weak self] in
                 self?.audioLevel = level
             }
@@ -313,7 +328,7 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
             lastSpokenTime = Date()
         } catch {
             errorMessage = "Erro ao iniciar captura: \(error.localizedDescription)"
-            stopListening()
+            stopListening(shouldAnalyze: false)
             return
         }
         
@@ -322,26 +337,45 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
             
             if let result = result {
                 let transcription = result.bestTranscription.formattedString
+                let isFinal = result.isFinal
                 Task { @MainActor in
+                    // Ignora callbacks atrasados de sessões já encerradas
+                    guard self.recordingSessionId == sessionId, self.isRecording else { return }
+                    
+                    let previousText = self.recognizedText
                     self.recognizedText = transcription
-                    self.lastSpokenTime = Date()
+                    if transcription != previousText {
+                        self.lastSpokenTime = Date()
+                    }
+                    
                     if self.listeningMode == .food {
-                        self.scheduleParse(for: transcription)
+                        if isFinal && !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            self.stopListening(shouldAnalyze: true)
+                        } else {
+                            self.scheduleSilenceDetection(for: transcription, sessionId: sessionId)
+                        }
                     }
                 }
+                return
             }
             
-            if error != nil || (result?.isFinal ?? false) {
+            if error != nil {
                 Task { @MainActor in
-                    if self.listeningMode == .food, let text = result?.bestTranscription.formattedString, !text.isEmpty {
-                        self.analyzeIntent(from: text)
-                    }
+                    guard self.recordingSessionId == sessionId, self.isRecording else { return }
+                    let hasText = !self.recognizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    self.stopListening(shouldAnalyze: self.listeningMode == .food && hasText)
                 }
             }
         }
     }
     
-    public func stopListening() {
+    public func stopListening(shouldAnalyze: Bool = true) {
+        let wasRecording = isRecording
+        recordingSessionId += 1
+        
+        silenceDetectionTask?.cancel()
+        silenceDetectionTask = nil
+        
         parseDebounceTask?.cancel()
         parseDebounceTask = nil
         
@@ -360,57 +394,140 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
         
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         
-        if listeningMode == .food {
+        if shouldAnalyze && wasRecording && listeningMode == .food {
             let trimmed = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && trimmed != currentIntent?.rawText {
-                analyzeIntent(from: trimmed)
+            if !trimmed.isEmpty && !isIncompleteFragment(trimmed) {
+                analyzeIntent(from: trimmed, forceAI: false, allowCloudAI: true)
             }
         }
     }
     
-    // MARK: - Análise e Parsing de Fala
+    // MARK: - Análise e Detecção de Término de Fala
     
-    private func scheduleParse(for text: String) {
-        parseDebounceTask?.cancel()
-        parseDebounceTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled else { return }
-            self.analyzeIntent(from: text)
+    private func scheduleSilenceDetection(for currentText: String, sessionId: Int) {
+        silenceDetectionTask?.cancel()
+        let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        // Se a frase terminar em conector/número pendente (ex: "Cento e", "Dois pães de 76g cada com", "e 150"),
+        // dá mais tempo para o usuário concluir o raciocínio antes de encerrar o microfone.
+        let waitNs: UInt64 = hasDanglingConnectorOrNumber(trimmed) ? 4_000_000_000 : 2_500_000_000
+        
+        silenceDetectionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: waitNs)
+            guard !Task.isCancelled,
+                  let self = self,
+                  self.isRecording,
+                  self.recordingSessionId == sessionId else { return }
+            self.stopListening(shouldAnalyze: true)
         }
     }
     
-    public func analyzeIntent(from spokenText: String) {
+    /// Detecta se a fala atual parou no meio de uma preposição, conjunção ou numeral incompleto
+    public func hasDanglingConnectorOrNumber(_ text: String) -> Bool {
+        let words = text
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        guard let last = words.last else { return true }
+        
+        let danglingWords: Set<String> = [
+            "e", "com", "de", "da", "do", "dos", "das", "no", "na", "nos", "nas",
+            "um", "uma", "dois", "duas", "três", "tres", "quatro", "cinco",
+            "meio", "meia", "cento", "duzentos", "trezentos", "quatrocentos", "quinhentos",
+            "mais", "para", "pro", "pra", "cada"
+        ]
+        if danglingWords.contains(last) {
+            return true
+        }
+        // Terminou apenas com um número solto após conector (ex: "... e 150", "... com 35")
+        if Double(last.replacingOccurrences(of: ",", with: ".")) != nil {
+            return true
+        }
+        return false
+    }
+    
+    /// Evita enviar fragmentos curtos sem nenhum alimento real (ex: "Cento e", "Dois", "150 g de") para a IA
+    public func isIncompleteFragment(_ text: String) -> Bool {
+        let extracted = extractFoodQuery(from: text)
+        if extracted.isEmpty || isPureMeasureQuery(extracted) {
+            return true
+        }
+        let meaningfulWords = extracted
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+        let numberWords: Set<String> = [
+            "cento", "cem", "duzentos", "trezentos", "quatrocentos", "quinhentos",
+            "um", "uma", "dois", "duas", "três", "tres", "quatro", "cinco", "seis",
+            "sete", "oito", "nove", "dez", "vinte", "trinta", "quarenta", "cinquenta",
+            "sessenta", "setenta", "oitenta", "noventa"
+        ]
+        let nonNumericWords = meaningfulWords.filter { !numberWords.contains($0) && Double($0) == nil }
+        return nonNumericWords.isEmpty
+    }
+    
+    public func analyzeIntent(from spokenText: String, forceAI: Bool = false, allowCloudAI: Bool = true) {
         let trimmed = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         
-        let cleanQuery = extractFoodQuery(from: trimmed)
-        
-        // Se a fala contém apenas quantidade/medida (ex: "100g", "200 gramas"):
-        if cleanQuery.isEmpty || isPureMeasureQuery(cleanQuery) {
-            let portion = extractPortionGrams(from: trimmed)
-            if let first = currentIntent?.items.first {
-                updateItemPortion(id: first.id, newPortion: portion)
+        if !forceAI {
+            let cleanQuery = extractFoodQuery(from: trimmed)
+            
+            // Se a fala contém apenas quantidade/medida (ex: "100g", "200 gramas"):
+            if cleanQuery.isEmpty || isPureMeasureQuery(cleanQuery) {
+                let portion = extractPortionGrams(from: trimmed)
+                if let first = currentIntent?.items.first {
+                    updateItemPortion(id: first.id, newPortion: portion)
+                }
+                return
             }
-            return
+            
+            // Se não há alimento válido (apenas numeral como "Cento e"), nunca dispara IA
+            if isIncompleteFragment(trimmed) {
+                return
+            }
         }
         
+        // Deduplicação contra chamadas idênticas consecutivas
+        let signature = "\(trimmed.lowercased())|force:\(forceAI)|cloud:\(allowCloudAI)"
+        if signature == lastAnalyzedSignature && (isAnalyzing || currentIntent?.rawText.lowercased() == trimmed.lowercased()) {
+            return
+        }
+        lastAnalyzedSignature = signature
+        
+        let preservedMealType = currentIntent?.mealType
         currentAnalysisId += 1
         let analysisId = currentAnalysisId
         activeAnalysisTask?.cancel()
         
-        isAnalyzing = true
+        if allowCloudAI || forceAI {
+            isAnalyzing = true
+            analysisPhase = forceAI ? .artificialIntelligence : .tacoDatabase
+        }
         
         activeAnalysisTask = Task { [weak self] in
-            guard let self = self else { return }
-            
-            // Aciona o parser nutricional inteligente (separa arroz, feijão, shakes, etc. com Tabela TACO de primeira e Nuvem como fallback)
-            let parseResult = await AIFoodParserService.shared.parseMeal(description: trimmed)
+            // Aciona o parser nutricional com transição suave entre a base TACO e IA (somente usa nuvem quando permitido)
+            let parseResult = await AIFoodParserService.shared.parseMeal(
+                description: trimmed,
+                forceAI: forceAI,
+                allowCloudAI: allowCloudAI,
+                onPhaseChange: { [weak self] newPhase in
+                    Task { @MainActor [weak self] in
+                        guard let strongSelf = self, strongSelf.currentAnalysisId == analysisId else { return }
+                        if allowCloudAI || forceAI {
+                            strongSelf.analysisPhase = newPhase
+                        }
+                    }
+                }
+            )
             
             guard !Task.isCancelled else { return }
             
-            await MainActor.run {
-                guard self.currentAnalysisId == analysisId else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.currentAnalysisId == analysisId else { return }
                 self.isAnalyzing = false
+                self.analysisPhase = .idle
                 
                 guard !parseResult.items.isEmpty else { return }
                 
@@ -424,15 +541,89 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
                         calories: item.calories,
                         protein: item.protein,
                         carbs: item.carbohydrates,
-                        fat: item.fat
+                        fat: item.fat,
+                        source: item.source
                     )
                 }
                 
                 self.currentIntent = VoiceFoodIntent(
                     rawText: trimmed,
-                    mealType: parseResult.mealType,
+                    mealType: preservedMealType ?? self.preferredMealType ?? parseResult.mealType,
                     items: plateItems
                 )
+            }
+        }
+    }
+    
+    /// Analisa foto da refeição via Gemini Vision e preenche os itens ajustáveis do prato
+    public func analyzePhoto(imageData: Data, hintText: String = "") {
+        stopListening(shouldAnalyze: false)
+        activeAnalysisTask?.cancel()
+        parseDebounceTask?.cancel()
+        
+        let preservedMealType = currentIntent?.mealType ?? preferredMealType
+        currentAnalysisId += 1
+        let analysisId = currentAnalysisId
+        lastAnalyzedSignature = ""
+        errorMessage = nil
+        isAnalyzing = true
+        analysisPhase = .photoVision
+        
+        activeAnalysisTask = Task { [weak self] in
+            guard let self = self else { return }
+            do {
+                let extracted = try await GeminiAIService.shared.analyzeMealImage(
+                    imageData: imageData,
+                    mimeType: "image/jpeg",
+                    additionalContext: hintText
+                )
+                guard !Task.isCancelled else { return }
+                
+                await MainActor.run {
+                    guard self.currentAnalysisId == analysisId else { return }
+                    self.isAnalyzing = false
+                    self.analysisPhase = .idle
+                    
+                    guard !extracted.items.isEmpty else {
+                        self.errorMessage = "Não foi possível identificar alimentos claros nesta imagem. Tente aproximar a foto ou adicionar uma observação."
+                        return
+                    }
+                    
+                    let plateItems = extracted.items.map { item in
+                        VoicePlateItem(
+                            name: item.name,
+                            brand: "",
+                            portionValue: item.portionValue,
+                            unit: item.unit,
+                            isLiquid: item.isLiquid,
+                            calories: item.calories,
+                            protein: item.protein,
+                            carbs: item.carbohydrates,
+                            fat: item.fat,
+                            source: "Forma Foto"
+                        )
+                    }
+                    
+                    let resolvedMeal = preservedMealType ?? self.extractMealType(from: extracted.mealType)
+                    let labelText = hintText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? plateItems.map { $0.name }.joined(separator: ", ")
+                        : hintText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    
+                    self.currentIntent = VoiceFoodIntent(
+                        rawText: labelText,
+                        mealType: resolvedMeal,
+                        items: plateItems,
+                        aiSummary: extracted.aiSummary
+                    )
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard self.currentAnalysisId == analysisId else { return }
+                    self.isAnalyzing = false
+                    self.analysisPhase = .idle
+                    self.errorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -486,7 +677,35 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
     }
     
     public func updateMealType(_ meal: MealType) {
+        preferredMealType = meal
+        selectedMealType = meal
         currentIntent?.mealType = meal
+    }
+
+    public func addSuggestedPlateItem(_ item: VoicePlateItem, mealType: MealType) {
+        stopListening(shouldAnalyze: false)
+        activeAnalysisTask?.cancel()
+        parseDebounceTask?.cancel()
+        preferredMealType = mealType
+        selectedMealType = mealType
+
+        if var existing = currentIntent, !existing.items.isEmpty {
+            existing.mealType = mealType
+            if let matchIdx = existing.items.firstIndex(where: { $0.name.caseInsensitiveCompare(item.name) == .orderedSame }) {
+                let currentPortion = existing.items[matchIdx].portionValue
+                existing.items[matchIdx].updatePortion(currentPortion + item.portionValue)
+            } else {
+                existing.items.append(item)
+            }
+            existing.rawText = existing.items.map(\.name).joined(separator: ", ")
+            self.currentIntent = existing
+        } else {
+            self.currentIntent = VoiceFoodIntent(
+                rawText: item.name,
+                mealType: mealType,
+                items: [item]
+            )
+        }
     }
     
     // MARK: - Algoritmos de Extração Linguística em Português
@@ -675,5 +894,29 @@ public final class VoiceRecognitionService: NSObject, ObservableObject {
             .replacingOccurrences(of: "de", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return Double(cleaned) != nil || cleaned.isEmpty
+    }
+
+    nonisolated private static func installRealtimeAudioTap(
+        on inputNode: AVAudioInputNode,
+        format: AVAudioFormat,
+        request: SFSpeechAudioBufferRecognitionRequest,
+        onLevelUpdate: @escaping @Sendable (Float) -> Void
+    ) {
+        try? inputNode.__installTap(onBus: 0, bufferSize: 1024, format: format, error: ()) { buffer, _ in
+            request.append(buffer)
+
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frameLength = Int(buffer.frameLength)
+            guard frameLength > 0 else { return }
+
+            var sum: Float = 0.0
+            for i in 0..<frameLength {
+                let sample = channelData[i]
+                sum += sample * sample
+            }
+            let rms = sqrt(sum / Float(frameLength))
+            let level = min(max(rms * 10.0, 0.05), 1.0)
+            onLevelUpdate(level)
+        }
     }
 }

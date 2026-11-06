@@ -12,6 +12,7 @@ import SwiftUI
 struct ContaCaWidgetsBundle: WidgetBundle {
     var body: some Widget {
         ContaCaCalorieWidget()
+        ContaCaWaterWidget()
         WorkoutLiveActivity()
     }
 }

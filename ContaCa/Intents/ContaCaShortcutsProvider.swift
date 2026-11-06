@@ -7,7 +7,7 @@
 
 import AppIntents
 
-/// Provedor de atalhos automáticos do ContaCa para a Siri e App Atalhos
+/// Provedor de atalhos automáticos do Forma para a Siri e App Atalhos
 public struct ContaCaShortcutsProvider: AppShortcutsProvider {
     public static var appShortcuts: [AppShortcut] {
         AppShortcut(

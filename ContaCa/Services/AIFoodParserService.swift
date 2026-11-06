@@ -128,7 +128,16 @@ public final class AIFoodParserService: Sendable {
     
     // MARK: - API Principal de Parsing
     
-    public func parseMeal(description: String) async -> ParsedMealResult {
+    public func parseMeal(
+        description: String,
+        forceAI: Bool = false,
+        allowCloudAI: Bool = true,
+        onPhaseChange: (@Sendable (AnalysisPhase) -> Void)? = nil
+    ) async -> ParsedMealResult {
+        if allowCloudAI || forceAI {
+            onPhaseChange?(forceAI ? .artificialIntelligence : .tacoDatabase)
+        }
+        
         let cleanedInput = description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanedInput.isEmpty else {
             return ParsedMealResult(
@@ -147,34 +156,68 @@ public final class AIFoodParserService: Sendable {
         let sanitizedText = stripConversationalNoise(from: cleanedInput)
         let rawSegments = segmentDishes(from: sanitizedText)
         
-        // 1. TENTA PRIMEIRO A BASE LOCAL INSTANTÂNEA (Tabela TACO Brasil - 0ms) - "DE PRIMEIRA"
-        var localParsedItems: [ParsedFoodItem] = []
-        for segment in rawSegments {
-            if let item = processLocalSegment(segment) {
-                localParsedItems.append(item)
+        // 1. TENTA PRIMEIRO A BASE LOCAL INSTANTÂNEA (Tabela TACO Brasil - 0ms) se forceAI for false
+        if !forceAI {
+            var localParsedItems: [ParsedFoodItem] = []
+            for segment in rawSegments {
+                if let item = processLocalSegment(segment) {
+                    localParsedItems.append(item)
+                }
+            }
+            
+            // Se todos os componentes foram identificados com sucesso na base local offline, retorna de imediato
+            if !localParsedItems.isEmpty && localParsedItems.count >= rawSegments.count {
+                let totalCal = localParsedItems.reduce(0.0) { $0 + $1.calories }
+                let totalProt = localParsedItems.reduce(0.0) { $0 + $1.protein }
+                let totalCarb = localParsedItems.reduce(0.0) { $0 + $1.carbohydrates }
+                let totalFat = localParsedItems.reduce(0.0) { $0 + $1.fat }
+                return ParsedMealResult(
+                    rawText: cleanedInput,
+                    mealType: mealType,
+                    items: localParsedItems,
+                    totalCalories: totalCal,
+                    totalProtein: totalProt,
+                    totalCarbs: totalCarb,
+                    totalFat: totalFat,
+                    overallConfidence: 0.98
+                )
+            }
+            
+            // Enquanto o usuário ainda está digitando/editando (allowCloudAI == false), NUNCA dispara requisição para a IA
+            if !allowCloudAI {
+                return ParsedMealResult(
+                    rawText: cleanedInput,
+                    mealType: mealType,
+                    items: [],
+                    totalCalories: 0,
+                    totalProtein: 0,
+                    totalCarbs: 0,
+                    totalFat: 0,
+                    overallConfidence: 0
+                )
             }
         }
         
-        // Se todos os componentes foram identificados com sucesso na base local offline, retorna de imediato
-        if !localParsedItems.isEmpty && localParsedItems.count >= rawSegments.count {
-            let totalCal = localParsedItems.reduce(0.0) { $0 + $1.calories }
-            let totalProt = localParsedItems.reduce(0.0) { $0 + $1.protein }
-            let totalCarb = localParsedItems.reduce(0.0) { $0 + $1.carbohydrates }
-            let totalFat = localParsedItems.reduce(0.0) { $0 + $1.fat }
-            return ParsedMealResult(
-                rawText: cleanedInput,
-                mealType: mealType,
-                items: localParsedItems,
-                totalCalories: totalCal,
-                totalProtein: totalProt,
-                totalCarbs: totalCarb,
-                totalFat: totalFat,
-                overallConfidence: 0.98
-            )
-        }
-        
-        // 2. FALLBACK: Se algum componente NÃO foi encontrado na base local e a nuvem estiver configurada
-        if GeminiConfig.shared.hasValidKey {
+        // 2. ANÁLISE COM INTELIGÊNCIA ARTIFICIAL (Forçada pelo usuário ou Fallback quando item não consta na TACO após finalizar entrada)
+        if (allowCloudAI && GeminiConfig.shared.hasValidKey) || forceAI {
+            onPhaseChange?(.artificialIntelligence)
+            // Intervalo suave para percepção visual da transição
+            if !forceAI {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+            if Task.isCancelled {
+                return ParsedMealResult(
+                    rawText: cleanedInput,
+                    mealType: mealType,
+                    items: [],
+                    totalCalories: 0,
+                    totalProtein: 0,
+                    totalCarbs: 0,
+                    totalFat: 0,
+                    overallConfidence: 0
+                )
+            }
+            
             do {
                 let aiMeal = try await GeminiAIService.shared.analyzeMeal(description: cleanedInput)
                 let detectedMealType = MealType(rawValue: aiMeal.mealType) ?? mealType
@@ -190,8 +233,8 @@ public final class AIFoodParserService: Sendable {
                         protein: item.protein,
                         carbohydrates: item.carbohydrates,
                         fat: item.fat,
-                        confidence: 0.98,
-                        source: "Base Nutricional"
+                        confidence: 0.99,
+                        source: "IA Gemini"
                     )
                 }
                 
@@ -203,23 +246,23 @@ public final class AIFoodParserService: Sendable {
                     totalProtein: aiMeal.totalProtein,
                     totalCarbs: aiMeal.totalCarbs,
                     totalFat: aiMeal.totalFat,
-                    overallConfidence: 0.98
+                    overallConfidence: 0.99
                 )
             } catch {
-                print("⚠️ [AIFoodParser] Fallback em nuvem indisponível: \(error.localizedDescription)")
+                print("⚠️ [AIFoodParser] Análise IA em nuvem indisponível: \(error.localizedDescription)")
             }
         }
         
-        // 3. Fallback Heurístico Local Final (Estimativa aproximada se nuvem falhou ou offline)
+        // 3. Fallback Heurístico Local Final (Sem novas chamadas de rede!)
         var parsedItems: [ParsedFoodItem] = []
         for segment in rawSegments {
-            if let item = await self.processSegment(segment) {
+            if let item = self.processOfflineFallbackSegment(segment) {
                 parsedItems.append(item)
             }
         }
         
         if parsedItems.isEmpty {
-            if let singleItem = await processSegment(sanitizedText.isEmpty ? cleanedInput : sanitizedText) {
+            if let singleItem = self.processOfflineFallbackSegment(sanitizedText.isEmpty ? cleanedInput : sanitizedText) {
                 parsedItems.append(singleItem)
             }
         }
@@ -272,37 +315,21 @@ public final class AIFoodParserService: Sendable {
         )
     }
     
-    // MARK: - Processamento de Segmento Único
+    // MARK: - Processamento de Segmento Offline (Fallback sem chamadas de IA)
     
-    private func processSegment(_ segment: String) async -> ParsedFoodItem? {
+    private func processOfflineFallbackSegment(_ segment: String) -> ParsedFoodItem? {
         let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         
-        let portionGrams = extractGrams(from: trimmed)
-        let foodQuery = extractFoodName(from: trimmed)
-        
-        let queryToUse = foodQuery.isEmpty ? trimmed : foodQuery
-        
-        // Busca alimentos no NutritionService (Tabela TACO + APIs)
-        let searchResults = await NutritionService.shared.searchFoods(query: queryToUse)
-        
-        if let best = searchResults.first {
-            let values = best.values(for: portionGrams)
-            return ParsedFoodItem(
-                originalPhrase: trimmed,
-                matchedFoodName: best.name,
-                brand: best.brand,
-                portionGrams: portionGrams,
-                calories: values.calories,
-                protein: values.protein,
-                carbohydrates: values.carbs,
-                fat: values.fat,
-                confidence: 0.95,
-                source: best.sourceTag
-            )
+        if let local = processLocalSegment(trimmed) {
+            return local
         }
         
-        // Fallback inteligente para estimativa aproximada se não achar match exato
+        let portionGrams = extractGrams(from: trimmed)
+        let foodQuery = extractFoodName(from: trimmed)
+        let queryToUse = foodQuery.isEmpty ? trimmed : foodQuery
+        
+        // Fallback inteligente para estimativa aproximada offline
         let estimated = estimateNutrients(for: queryToUse, grams: portionGrams)
         return ParsedFoodItem(
             originalPhrase: trimmed,
@@ -372,6 +399,19 @@ public final class AIFoodParserService: Sendable {
     
     public func extractGrams(from text: String) -> Double {
         let lower = text.lowercased()
+        
+        // 0. Multiplicador com "cada" (ex: "Dois pães francês de 76 g cada" -> 2 * 76 = 152g)
+        let eachGramPattern = #"^(?:(\d+|um|uma|dois|duas|três|tres|quatro|cinco)\s+.+?\s+)?(\d+(?:[.,]\d+)?)\s*(?:gramas?|g\b|gr\b)\s+cada\b"#
+        if let regex = try? NSRegularExpression(pattern: eachGramPattern, options: .caseInsensitive),
+           let match = regex.firstMatch(in: lower, options: [], range: NSRange(lower.startIndex..., in: lower)),
+           let gramsRange = Range(match.range(at: 2), in: lower),
+           let grams = Double(String(lower[gramsRange]).replacingOccurrences(of: ",", with: ".")), grams > 0 {
+            if match.range(at: 1).location != NSNotFound, let qtyRange = Range(match.range(at: 1), in: lower) {
+                let mult = parseQuantity(String(lower[qtyRange]))
+                return mult * grams
+            }
+            return grams
+        }
         
         // 1. Gramas explícitas (ex: 150g, 200 gramas, 350 gr)
         let gramPattern = #"(\d+(?:[.,]\d+)?)\s*(?:gramas?|g\b|gr\b)"#
@@ -574,6 +614,7 @@ public final class AIFoodParserService: Sendable {
         }
         
         clean = clean
+            .replacingOccurrences(of: #"\bcada(?:\s+uma?)?\b"#, with: " ", options: [.regularExpression, .caseInsensitive])
             .replacingOccurrences(of: " de ", with: " ")
             .replacingOccurrences(of: " da ", with: " ")
             .replacingOccurrences(of: " do ", with: " ")
