@@ -28,6 +28,25 @@ public final class DomainExceptions {
         }
     }
 
+    public static class AccountAlreadyExistsException extends RuntimeException {
+        private final String email;
+        private final String existingName;
+
+        public AccountAlreadyExistsException(String message, String email, String existingName) {
+            super(message);
+            this.email = email;
+            this.existingName = existingName;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public String getExistingName() {
+            return existingName;
+        }
+    }
+
     public static class AiBlockedException extends RuntimeException {
         private final boolean globalBlock;
 

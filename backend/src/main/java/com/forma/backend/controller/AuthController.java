@@ -129,6 +129,7 @@ public class AuthController {
     ) {
         User user = authContextResolver.requireActiveUser(authHeader, fallbackUserId);
         adminUserService.deleteUserPermanently(user.getId());
+        authContextResolver.markUserDeleted(user.getId());
         return ResponseEntity.ok(Map.of(
             "status", "deleted",
             "message", "Sua conta e todos os seus dados foram excluídos permanentemente."

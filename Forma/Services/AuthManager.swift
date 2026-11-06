@@ -8,6 +8,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import SwiftData
 import AuthenticationServices
 
 @MainActor
@@ -21,11 +22,40 @@ public final class AuthManager: ObservableObject {
     private let userNameKey = "forma_user_name"
     private let authProviderKey = "forma_auth_provider"
 
-    // MARK: - Endereços de Rede Local / Bonjour / Simulador
+    // MARK: - Endereços de Rede Local / Bonjour / Simulador (Lê BACKEND_BASE_URL do Secrets.plist primeiro)
+    public static var configuredPlistUrl: String? {
+        if let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
+           let dict = NSDictionary(contentsOfFile: path) as? [String: Any],
+           let url = dict["BACKEND_BASE_URL"] as? String {
+            let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    private static let lastWorkingServerUrlKey = "forma_last_working_server_url"
+    private static let boundServerOriginKey = "forma_bound_server_origin"
+
+    public static var isConfiguredRemoteHttps: Bool {
+        guard let url = configuredPlistUrl?.lowercased() else { return false }
+        return url.hasPrefix("https://")
+    }
+
     #if targetEnvironment(simulator)
-    public static let defaultServerUrl = "http://localhost:8085"
+    public static var defaultServerUrl: String { configuredPlistUrl ?? "http://localhost:8085" }
     #else
-    public static let defaultServerUrl = "http://10.0.0.106:8085"
+    public static var defaultServerUrl: String {
+        if let plistUrl = configuredPlistUrl, !plistUrl.isEmpty {
+            return plistUrl
+        }
+        if let saved = UserDefaults.standard.string(forKey: lastWorkingServerUrlKey),
+           !saved.isEmpty,
+           !deprecatedSubnetHosts.contains(saved) {
+            return saved
+        }
+        return "http://MacBook-Pro-de-Joao-2.local:8085"
+    }
     #endif
     public static let fallbackBonjourUrl = "http://MacBook-Pro-de-Joao-2.local:8085"
     public static let fallbackCurrentLanUrl = "http://10.0.0.106:8085"
@@ -41,8 +71,31 @@ public final class AuthManager: ObservableObject {
         "http://192.168.1.13:8085"
     ]
 
+    public func markWorkingServerUrl(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if serverBaseUrl != trimmed {
+            serverBaseUrl = trimmed
+        }
+        UserDefaults.standard.set(trimmed, forKey: Self.lastWorkingServerUrlKey)
+    }
+
     public var candidateServerUrls: [String] {
+        // Quando apontado para servidor HTTPS em nuvem (ex: Render), usa exclusivamente a URL de produção
+        // sem tentar IPs locais nem reduzir o timeout em cold-starts.
+        if Self.isConfiguredRemoteHttps, let prodUrl = Self.configuredPlistUrl {
+            return [prodUrl]
+        }
+
         var list: [String] = []
+        if let plistUrl = Self.configuredPlistUrl, !plistUrl.isEmpty {
+            list.append(plistUrl)
+        }
+        if let saved = UserDefaults.standard.string(forKey: Self.lastWorkingServerUrlKey),
+           !saved.isEmpty,
+           !Self.deprecatedSubnetHosts.contains(saved) {
+            list.append(saved)
+        }
         let current = serverBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
 
         #if targetEnvironment(simulator)
@@ -50,15 +103,15 @@ public final class AuthManager: ObservableObject {
         list.append(Self.fallbackLocalUrl)
         list.append(Self.fallbackLoopbackUrl)
         list.append(Self.fallbackBonjourUrl)
-        list.append(Self.fallbackCurrentLanUrl)
         list.append(Self.fallbackSecondaryLanUrl)
+        list.append(Self.fallbackCurrentLanUrl)
         #else
         if !current.isEmpty && !Self.deprecatedSubnetHosts.contains(current) {
             list.append(current)
         }
-        list.append(Self.fallbackCurrentLanUrl)
         list.append(Self.fallbackBonjourUrl)
         list.append(Self.fallbackSecondaryLanUrl)
+        list.append(Self.fallbackCurrentLanUrl)
         list.append(Self.fallbackLocalUrl)
         list.append(Self.fallbackLoopbackUrl)
         #endif
@@ -81,7 +134,21 @@ public final class AuthManager: ObservableObject {
     @Published public var serverBaseUrl: String
 
     private init() {
-        self.serverBaseUrl = Self.defaultServerUrl
+        let resolvedUrl = Self.defaultServerUrl
+        self.serverBaseUrl = resolvedUrl
+
+        let previousOrigin = UserDefaults.standard.string(forKey: Self.boundServerOriginKey)
+        if Self.isConfiguredRemoteHttps, previousOrigin != resolvedUrl {
+            // Trocou de servidor local para nuvem (Render): invalida apenas o JWT antigo sem apagar os dados locais do iPhone,
+            // permitindo que no novo login todos os registros locais sejam enviados ao Render / Supabase.
+            UserDefaults.standard.set(resolvedUrl, forKey: Self.boundServerOriginKey)
+            UserDefaults.standard.set(resolvedUrl, forKey: Self.lastWorkingServerUrlKey)
+            KeychainHelper.shared.delete(key: tokenKey)
+            UserDefaults.standard.removeObject(forKey: tokenKey)
+        } else if previousOrigin == nil {
+            UserDefaults.standard.set(resolvedUrl, forKey: Self.boundServerOriginKey)
+        }
+
         restoreSession()
     }
 
@@ -168,7 +235,9 @@ public final class AuthManager: ObservableObject {
         email: String?,
         name: String?,
         idToken: String?,
-        nonce: String? = nil
+        nonce: String? = nil,
+        isRegisterIntent: Bool = false,
+        confirmExisting: Bool = true
     ) async throws {
         isAuthenticating = true
         errorMessage = nil
@@ -176,7 +245,9 @@ public final class AuthManager: ObservableObject {
 
         var body: [String: Any] = [
             "provider": provider.uppercased(),
-            "providerId": providerId
+            "providerId": providerId,
+            "isRegisterIntent": isRegisterIntent,
+            "confirmExisting": confirmExisting
         ]
         if let email, !email.isEmpty { body["email"] = email }
         if let name, !name.isEmpty { body["name"] = name }
@@ -326,21 +397,39 @@ public final class AuthManager: ObservableObject {
 
         let result = try JSONDecoder().decode(AuthResponseModel.self, from: data)
         let previousLocalUserId = UserDefaults.standard.string(forKey: BackendSyncManager.activeLocalUserIdKey)
+        let localProfile = try? FormaDataStore.shared.mainContext.fetch(FetchDescriptor<Profile>()).first
+        let localEmail = localProfile?.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let incomingEmail = result.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let isSameOrUnclaimedLocalOwner = localEmail.isEmpty || (!incomingEmail.isEmpty && localEmail == incomingEmail)
+
         BackendSyncManager.shared.cancelPendingSyncs()
 
-        if previousLocalUserId != result.userId {
+        if let previousLocalUserId, previousLocalUserId != result.userId, !isSameOrUnclaimedLocalOwner {
             FormaDataStore.shared.resetLocalDataForUserSwitch(userName: result.name, userEmail: result.email)
             BackendSyncManager.shared.markRequiresInitialPull(true)
-            UserDefaults.standard.set(result.userId, forKey: BackendSyncManager.activeLocalUserIdKey)
+        } else {
+            if let profile = localProfile {
+                if let name = result.name, !name.isEmpty, (profile.nome.isEmpty || profile.nome == "Usuário") {
+                    profile.nome = name
+                }
+                if let email = result.email, !email.isEmpty {
+                    profile.email = email
+                }
+                try? FormaDataStore.shared.mainContext.save()
+            }
+            BackendSyncManager.shared.markRequiresInitialPull(false)
         }
+        UserDefaults.standard.set(result.userId, forKey: BackendSyncManager.activeLocalUserIdKey)
 
         self.jwtToken = result.token
         self.currentUserId = result.userId
         self.currentUserEmail = result.email
         self.currentUserName = result.name
         self.currentAuthProvider = result.authProvider ?? defaultProvider
-        self.isAuthenticated = true
-        self.isGuest = false
+        withAnimation(.easeInOut(duration: 0.25)) {
+            self.isGuest = false
+            self.isAuthenticated = true
+        }
 
         KeychainHelper.shared.save(key: tokenKey, string: result.token)
         KeychainHelper.shared.save(key: userIdKey, string: result.userId)

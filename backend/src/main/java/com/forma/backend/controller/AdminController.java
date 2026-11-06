@@ -456,6 +456,7 @@ public class AdminController {
     ) {
         authContextResolver.requireAdmin(request, adminKey, cookieToken);
         adminUserService.deleteUserPermanently(userId);
+        authContextResolver.markUserDeleted(userId);
         return ResponseEntity.ok(Map.of(
             "status", "deleted",
             "message", "Usuário e todos os dados vinculados foram excluídos permanentemente."

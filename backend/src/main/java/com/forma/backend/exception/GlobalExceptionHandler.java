@@ -33,6 +33,19 @@ public class GlobalExceptionHandler {
         return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage(), Map.of("accountPaused", true));
     }
 
+    @ExceptionHandler(AccountAlreadyExistsException.class)
+    public ResponseEntity<Map<String, Object>> handleAccountAlreadyExists(AccountAlreadyExistsException ex) {
+        Map<String, Object> extra = new LinkedHashMap<>();
+        extra.put("accountExists", true);
+        if (ex.getEmail() != null) {
+            extra.put("email", ex.getEmail());
+        }
+        if (ex.getExistingName() != null) {
+            extra.put("existingName", ex.getExistingName());
+        }
+        return buildResponse(HttpStatus.CONFLICT, ex.getMessage(), extra);
+    }
+
     @ExceptionHandler(AiBlockedException.class)
     public ResponseEntity<Map<String, Object>> handleAiBlocked(AiBlockedException ex) {
         if (ex.isGlobalBlock()) {

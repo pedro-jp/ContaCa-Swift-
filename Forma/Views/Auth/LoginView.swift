@@ -23,6 +23,19 @@ struct LoginView: View {
     @State private var localErrorMessage: String? = nil
     @State private var showForgotPasswordSheet: Bool = false
     @State private var showLegalPrivacySheet: Bool = false
+    @State private var isGoogleAuthenticating: Bool = false
+    @State private var showExistingAccountAlert: Bool = false
+    @State private var pendingSocialSignIn: PendingSocialSignIn? = nil
+
+    private struct PendingSocialSignIn {
+        let provider: String
+        let providerId: String
+        let email: String?
+        let name: String
+        let idToken: String?
+        let nonce: String?
+        let existingEmail: String
+    }
     
     var onLoginSuccess: () -> Void
     
@@ -216,11 +229,16 @@ struct LoginView: View {
                             handleGoogleSignIn()
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: "g.circle.fill")
-                                    .font(.system(size: 20, weight: .bold))
-                                    .foregroundStyle(.blue)
+                                if isGoogleAuthenticating {
+                                    ProgressView()
+                                        .tint(.blue)
+                                } else {
+                                    Image(systemName: "g.circle.fill")
+                                        .font(.system(size: 20, weight: .bold))
+                                        .foregroundStyle(.blue)
+                                }
                                 
-                                Text("Continuar com Google")
+                                Text(isGoogleAuthenticating ? "Conectando com Google..." : "Continuar com Google")
                                     .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(Color("FontNormal"))
                             }
@@ -233,6 +251,7 @@ struct LoginView: View {
                                     .stroke(Color.primary.opacity(0.12), lineWidth: 1)
                             )
                         }
+                        .disabled(isGoogleAuthenticating || authManager.isAuthenticating)
                     }
                     .padding(.horizontal, 20)
 
@@ -262,6 +281,16 @@ struct LoginView: View {
             }
             .sheet(isPresented: $showLegalPrivacySheet) {
                 LegalPrivacySheet()
+            }
+            .alert("Conta já existente", isPresented: $showExistingAccountAlert) {
+                Button("Cancelar", role: .cancel) {
+                    pendingSocialSignIn = nil
+                }
+                Button("Sim, Entrar") {
+                    confirmPendingSocialSignIn()
+                }
+            } message: {
+                Text("Já existe uma conta cadastrada com o e-mail \(pendingSocialSignIn?.existingEmail ?? "informado"). Deseja entrar nessa conta?")
             }
         }
     }
@@ -319,17 +348,31 @@ struct LoginView: View {
             // 3. Identity Token UTF-8 assinado pela Apple
             let idToken = appleIDCredential.identityToken.flatMap { String(data: $0, encoding: .utf8) }
             
-            Task {
+            let resolvedName = fullName ?? "Usuário Apple"
+            Task { @MainActor in
                 do {
                     try await authManager.loginWithSocial(
                         provider: "APPLE",
                         providerId: userId,
                         email: email,
-                        name: fullName ?? "Usuário Apple",
+                        name: resolvedName,
                         idToken: idToken,
-                        nonce: rawNonce
+                        nonce: rawNonce,
+                        isRegisterIntent: isRegisterMode,
+                        confirmExisting: false
                     )
                     onLoginSuccess()
+                } catch FormaAPIError.accountAlreadyExists(_, let existingEmail, _) {
+                    pendingSocialSignIn = PendingSocialSignIn(
+                        provider: "APPLE",
+                        providerId: userId,
+                        email: email,
+                        name: resolvedName,
+                        idToken: idToken,
+                        nonce: rawNonce,
+                        existingEmail: existingEmail.isEmpty ? (email ?? "") : existingEmail
+                    )
+                    showExistingAccountAlert = true
                 } catch {
                     localErrorMessage = error.localizedDescription
                 }
@@ -347,23 +390,68 @@ struct LoginView: View {
     // MARK: - Google Sign-In Oficial
     private func handleGoogleSignIn() {
         localErrorMessage = nil
+        isGoogleAuthenticating = true
         let rawNonce = randomNonceString()
         
-        Task {
+        Task { @MainActor in
+            defer { isGoogleAuthenticating = false }
             do {
                 let userResult = try await GoogleAuthService.shared.startSignIn(rawNonce: rawNonce)
-                try await authManager.loginWithSocial(
-                    provider: "GOOGLE",
-                    providerId: userResult.sub ?? "google_user_\(abs(rawNonce.hashValue))",
-                    email: userResult.email,
-                    name: userResult.name ?? "Usuário Google",
-                    idToken: userResult.idToken,
-                    nonce: rawNonce
-                )
-                onLoginSuccess()
+                let resolvedProviderId = userResult.sub ?? "google_user_\(abs(rawNonce.hashValue))"
+                let resolvedName = userResult.name ?? "Usuário Google"
+                do {
+                    try await authManager.loginWithSocial(
+                        provider: "GOOGLE",
+                        providerId: resolvedProviderId,
+                        email: userResult.email,
+                        name: resolvedName,
+                        idToken: userResult.idToken,
+                        nonce: rawNonce,
+                        isRegisterIntent: isRegisterMode,
+                        confirmExisting: false
+                    )
+                    onLoginSuccess()
+                } catch FormaAPIError.accountAlreadyExists(_, let existingEmail, _) {
+                    pendingSocialSignIn = PendingSocialSignIn(
+                        provider: "GOOGLE",
+                        providerId: resolvedProviderId,
+                        email: userResult.email,
+                        name: resolvedName,
+                        idToken: userResult.idToken,
+                        nonce: rawNonce,
+                        existingEmail: existingEmail.isEmpty ? (userResult.email ?? "") : existingEmail
+                    )
+                    showExistingAccountAlert = true
+                }
             } catch is CancellationError {
                 // Usuário fechou o sheet de login
                 return
+            } catch {
+                localErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func confirmPendingSocialSignIn() {
+        guard let pending = pendingSocialSignIn else { return }
+        pendingSocialSignIn = nil
+        localErrorMessage = nil
+        isGoogleAuthenticating = true
+
+        Task { @MainActor in
+            defer { isGoogleAuthenticating = false }
+            do {
+                try await authManager.loginWithSocial(
+                    provider: pending.provider,
+                    providerId: pending.providerId,
+                    email: pending.email,
+                    name: pending.name,
+                    idToken: pending.idToken,
+                    nonce: pending.nonce,
+                    isRegisterIntent: false,
+                    confirmExisting: true
+                )
+                onLoginSuccess()
             } catch {
                 localErrorMessage = error.localizedDescription
             }

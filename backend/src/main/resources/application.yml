@@ -6,6 +6,8 @@ server:
     max-swallow-size: 15MB
 
 spring:
+  config:
+    import: optional:file:.env[.properties],optional:file:backend/.env[.properties]
   servlet:
     multipart:
       max-file-size: 15MB
@@ -41,6 +43,11 @@ app:
     key: ${ADMIN_KEY:admin123}
   google:
     client-id: ${GOOGLE_CLIENT_ID:}
+  supabase:
+    url: ${SUPABASE_URL:}
+    publishable-key: ${SUPABASE_PUBLISHABLE_KEY:}
+    secret-key: ${SUPABASE_SECRET_KEY:}
+    jwks-url: ${SUPABASE_JWKS_URL:}
   keepalive:
     enabled: ${KEEPALIVE_ENABLED:true}
     public-url: ${RENDER_EXTERNAL_URL:${APP_PUBLIC_URL:}}

@@ -4,6 +4,7 @@ import com.forma.backend.dto.AuthDto;
 import com.forma.backend.dto.SyncDto;
 import com.forma.backend.entity.User;
 import com.forma.backend.entity.UserProfile;
+import com.forma.backend.exception.DomainExceptions.AccountAlreadyExistsException;
 import com.forma.backend.exception.DomainExceptions.AccountPausedException;
 import com.forma.backend.exception.DomainExceptions.InvalidCredentialsException;
 import com.forma.backend.repository.UserProfileRepository;
@@ -157,8 +158,22 @@ public class AuthService {
         if (existing.isPresent()) {
             user = existing.get();
             assertUserNotPaused(user);
+
+            boolean alreadyLinkedThisProvider = provider.equalsIgnoreCase(user.getAuthProvider())
+                || (!providerId.isBlank() && providerId.equals(user.getProviderId()));
+            if (Boolean.FALSE.equals(request.confirmExisting())) {
+                boolean isRegisterAttempt = Boolean.TRUE.equals(request.isRegisterIntent());
+                if (isRegisterAttempt || !alreadyLinkedThisProvider) {
+                    throw new AccountAlreadyExistsException(
+                        "Já existe uma conta cadastrada com o e-mail " + user.getEmail() + ". Deseja entrar nessa conta?",
+                        user.getEmail(),
+                        user.getName()
+                    );
+                }
+            }
+
             user.setLastLoginAt(Instant.now());
-            if (user.getProviderId() == null) {
+            if (user.getProviderId() == null || user.getProviderId().isBlank() || Boolean.TRUE.equals(request.confirmExisting())) {
                 user.setProviderId(providerId);
             }
             if (resolvedName != null && !resolvedName.isBlank()

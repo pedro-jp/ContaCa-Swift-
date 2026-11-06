@@ -14,6 +14,7 @@ public enum FormaAPIError: LocalizedError, Equatable {
     case unauthorized(String)
     case accountDeleted(String)
     case accountPaused(String)
+    case accountAlreadyExists(message: String, email: String, name: String?)
     case aiBlocked(String)
     case rateLimited(String)
     case serverError(statusCode: Int, message: String)
@@ -27,6 +28,7 @@ public enum FormaAPIError: LocalizedError, Equatable {
         case .unauthorized(let msg),
              .accountDeleted(let msg),
              .accountPaused(let msg),
+             .accountAlreadyExists(let msg, _, _),
              .aiBlocked(let msg),
              .rateLimited(let msg):
             return msg
@@ -58,7 +60,7 @@ public final class FormaAPIClient {
             serializedBody = try JSONSerialization.data(withJSONObject: jsonBody)
         }
 
-        for base in candidates {
+        for (index, base) in candidates.enumerated() {
             var cleanBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
             if cleanBase.hasSuffix("/") {
                 cleanBase = String(cleanBase.dropLast())
@@ -67,7 +69,13 @@ public final class FormaAPIClient {
 
             var request = URLRequest(url: url)
             request.httpMethod = method
-            request.timeoutInterval = timeout
+            let isLastCandidate = (index == candidates.count - 1)
+            if cleanBase.lowercased().hasPrefix("https://") {
+                // Em servidores cloud (ex: Render Free Tier), aguarda eventual cold-start do container
+                request.timeoutInterval = max(timeout, 45.0)
+            } else {
+                request.timeoutInterval = isLastCandidate ? timeout : min(timeout, 2.5)
+            }
             if serializedBody != nil {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = serializedBody
@@ -87,16 +95,14 @@ public final class FormaAPIClient {
             do {
                 (data, response) = try await URLSession.shared.data(for: request)
             } catch {
-                // Host inacessível (ex: IP antigo de outra rede Wi-Fi) -> tenta próximo candidato imediatamente
+                // Host inacessível (ex: IP antigo de outra rede Wi-Fi) -> tenta próximo candidato rapidamente
                 continue
             }
 
             guard let http = response as? HTTPURLResponse else { continue }
 
-            // Host respondeu na camada HTTP -> promove para URL ativa principal
-            if AuthManager.shared.serverBaseUrl != cleanBase {
-                AuthManager.shared.serverBaseUrl = cleanBase
-            }
+            // Host respondeu na camada HTTP -> promove e memoriza como URL ativa principal
+            AuthManager.shared.markWorkingServerUrl(cleanBase)
 
             if (200...299).contains(http.statusCode) {
                 return data
@@ -137,6 +143,12 @@ public final class FormaAPIClient {
                 return .aiBlocked(cleanMessage)
             }
             return .serverError(statusCode: 403, message: cleanMessage)
+        }
+
+        if statusCode == 409 && (json?["accountExists"] as? Bool) == true {
+            let existingEmail = (json?["email"] as? String) ?? ""
+            let existingName = json?["existingName"] as? String
+            return .accountAlreadyExists(message: cleanMessage, email: existingEmail, name: existingName)
         }
 
         if statusCode == 429 {

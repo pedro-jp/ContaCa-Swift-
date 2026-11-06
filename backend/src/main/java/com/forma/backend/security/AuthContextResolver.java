@@ -1,8 +1,10 @@
 package com.forma.backend.security;
 
 import com.forma.backend.entity.User;
+import com.forma.backend.entity.UserProfile;
 import com.forma.backend.exception.DomainExceptions.*;
 import com.forma.backend.repository.AiRequestLogRepository;
+import com.forma.backend.repository.UserProfileRepository;
 import com.forma.backend.repository.UserRepository;
 import com.forma.backend.service.AppConfigService;
 import com.forma.backend.service.JwtService;
@@ -15,7 +17,9 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class AuthContextResolver {
@@ -24,14 +28,17 @@ public class AuthContextResolver {
 
     private final JwtService jwtService;
     private final UserRepository userRepository;
+    private final UserProfileRepository userProfileRepository;
     private final AppConfigService appConfigService;
     private final AiRequestLogRepository aiRequestLogRepository;
     private final String configuredAdminPassword;
     private final String configuredAdminKey;
+    private final Set<UUID> deletedUserIds = ConcurrentHashMap.newKeySet();
 
     public AuthContextResolver(
         JwtService jwtService,
         UserRepository userRepository,
+        UserProfileRepository userProfileRepository,
         AppConfigService appConfigService,
         AiRequestLogRepository aiRequestLogRepository,
         @Value("${app.admin.password:admin123}") String configuredAdminPassword,
@@ -39,10 +46,17 @@ public class AuthContextResolver {
     ) {
         this.jwtService = jwtService;
         this.userRepository = userRepository;
+        this.userProfileRepository = userProfileRepository;
         this.appConfigService = appConfigService;
         this.aiRequestLogRepository = aiRequestLogRepository;
         this.configuredAdminPassword = configuredAdminPassword;
         this.configuredAdminKey = configuredAdminKey;
+    }
+
+    public void markUserDeleted(UUID userId) {
+        if (userId != null) {
+            deletedUserIds.add(userId);
+        }
     }
 
     public UUID resolveOptionalUserId(String authHeader, String fallbackUserId) {
@@ -69,7 +83,8 @@ public class AuthContextResolver {
         if (userId == null) {
             throw new UnauthorizedAccessException("Sessão inválida ou não autenticada.");
         }
-        return verifyUserAccountActive(userId);
+        String tokenEmail = extractBearerEmail(authHeader);
+        return verifyUserAccountActive(userId, tokenEmail);
     }
 
     public UUID validateAiAccess(String authHeader, String fallbackUserId) {
@@ -82,7 +97,8 @@ public class AuthContextResolver {
 
         UUID userId = resolveOptionalUserId(authHeader, fallbackUserId);
         if (userId != null) {
-            User user = verifyUserAccountActive(userId);
+            String tokenEmail = extractBearerEmail(authHeader);
+            User user = verifyUserAccountActive(userId, tokenEmail);
             if (user.isAiBlocked()) {
                 throw new AiBlockedException(
                     "O acesso à Inteligência Artificial está desativado para esta conta.",
@@ -144,9 +160,43 @@ public class AuthContextResolver {
         }
     }
 
-    private User verifyUserAccountActive(UUID userId) {
-        User user = userRepository.findById(userId)
-            .orElseThrow(() -> new AccountDeletedException("Conta não encontrada ou removida pelo administrador."));
+    private String extractBearerEmail(String authHeader) {
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7).trim();
+            if (!token.isEmpty() && jwtService.validateToken(token)) {
+                return jwtService.getEmailFromToken(token);
+            }
+        }
+        return null;
+    }
+
+    private User verifyUserAccountActive(UUID userId, String tokenEmail) {
+        if (deletedUserIds.contains(userId)) {
+            throw new AccountDeletedException("Conta não encontrada ou removida pelo administrador.");
+        }
+
+        User user = userRepository.findById(userId).orElseGet(() -> {
+            if (tokenEmail != null && !tokenEmail.isBlank()) {
+                var byEmail = userRepository.findByEmail(tokenEmail.trim().toLowerCase());
+                if (byEmail.isPresent()) {
+                    return byEmail.get();
+                }
+                // Auto-provisiona a conta do token JWT válido quando o banco do backend foi recém-criado/migrado
+                User restored = new User(
+                    tokenEmail.trim().toLowerCase(),
+                    "Atleta Forma",
+                    "EMAIL",
+                    null
+                );
+                restored.setId(userId);
+                User saved = userRepository.save(restored);
+                if (!userProfileRepository.existsById(saved.getId())) {
+                    userProfileRepository.save(new UserProfile(saved.getId()));
+                }
+                return saved;
+            }
+            throw new AccountDeletedException("Conta não encontrada ou removida pelo administrador.");
+        });
 
         if (user.isPaused()) {
             String suffix = (user.getPausedReason() != null && !user.getPausedReason().isBlank())

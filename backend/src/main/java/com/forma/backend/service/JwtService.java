@@ -47,6 +47,19 @@ public class JwtService {
         return UUID.fromString(claims.getSubject());
     }
 
+    public String getEmailFromToken(String token) {
+        try {
+            Claims claims = Jwts.parser()
+                .verifyWith(key)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+            return claims.get("email", String.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public boolean validateToken(String token) {
         try {
             Jwts.parser().verifyWith(key).build().parseSignedClaims(token);

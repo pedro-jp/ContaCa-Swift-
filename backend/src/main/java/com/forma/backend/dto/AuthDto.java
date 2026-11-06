@@ -20,10 +20,23 @@ public class AuthDto {
         String email,
         String name,
         String providerId,
-        String nonce           // Nonce original para prevenção de replay attacks no Sign in with Apple
+        String nonce,          // Nonce original para prevenção de replay attacks no Sign in with Apple
+        Boolean isRegisterIntent,
+        Boolean confirmExisting
     ) {
+        public SocialLoginRequest(
+            String provider,
+            String idToken,
+            String email,
+            String name,
+            String providerId,
+            String nonce
+        ) {
+            this(provider, idToken, email, name, providerId, nonce, false, true);
+        }
+
         public SocialLoginRequest(String provider, String idToken, String email, String name, String providerId) {
-            this(provider, idToken, email, name, providerId, null);
+            this(provider, idToken, email, name, providerId, null, false, true);
         }
     }
 

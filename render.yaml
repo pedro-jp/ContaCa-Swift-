@@ -16,6 +16,14 @@ services:
         value: "600000"
       - key: DB_POOL_SIZE
         value: "5"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_JWKS_URL
+        sync: false
       - key: SUPABASE_DB_DRIVER
         value: org.postgresql.Driver
       - key: SUPABASE_DB_URL

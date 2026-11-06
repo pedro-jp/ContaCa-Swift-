@@ -17,27 +17,26 @@ struct FormaApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ZStack {
+            Group {
                 if isShowingSplash {
                     SplashScreenView {
                         withAnimation(.easeInOut(duration: 0.35)) {
                             isShowingSplash = false
                         }
                     }
-                    .zIndex(2)
                     .transition(.opacity)
-                } else if !authManager.isAuthenticated {
+                } else if authManager.isAuthenticated {
+                    MainView()
+                        .transition(.opacity)
+                } else {
                     LoginView {
                         triggerSync()
                     }
-                    .zIndex(1)
                     .transition(.opacity)
-                } else {
-                    MainView()
-                        .zIndex(0)
-                        .transition(.opacity)
                 }
             }
+            .animation(.easeInOut(duration: 0.25), value: authManager.isAuthenticated)
+            .animation(.easeInOut(duration: 0.3), value: isShowingSplash)
             .onOpenURL { url in
                 AppNavigationRouter.shared.handleDeepLink(url)
             }

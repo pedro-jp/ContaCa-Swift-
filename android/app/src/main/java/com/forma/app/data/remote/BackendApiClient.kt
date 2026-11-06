@@ -1,6 +1,7 @@
 package com.forma.app.data.remote
 
 import android.content.Context
+import com.forma.app.R
 import com.forma.app.data.model.*
 import com.google.gson.Gson
 import com.google.gson.JsonObject
@@ -28,8 +29,13 @@ class BackendApiClient(private val context: Context) {
         context.getSharedPreferences("forma_prefs", Context.MODE_PRIVATE)
     }
 
+    private val defaultBaseUrl: String by lazy {
+        runCatching { context.getString(R.string.backend_base_url).trimEnd('/') }
+            .getOrDefault("http://10.0.2.2:8085")
+    }
+
     var baseUrl: String
-        get() = prefs.getString("server_base_url", "http://10.0.2.2:8085") ?: "http://10.0.2.2:8085"
+        get() = prefs.getString("server_base_url", defaultBaseUrl) ?: defaultBaseUrl
         set(value) = prefs.edit().putString("server_base_url", value.trimEnd('/')).apply()
 
     var jwtToken: String?

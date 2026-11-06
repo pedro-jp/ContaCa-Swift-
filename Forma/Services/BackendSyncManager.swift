@@ -127,7 +127,12 @@ public final class BackendSyncManager: ObservableObject {
         
         // Barreira de segurança multi-usuário: garante que dados locais pertençam exclusivamente ao userId autenticado
         let activeLocalUserId = UserDefaults.standard.string(forKey: Self.activeLocalUserIdKey)
-        if let activeLocalUserId, activeLocalUserId != userId {
+        let localProfile = try? context.fetch(FetchDescriptor<Profile>()).first
+        let localEmail = localProfile?.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let authEmail = AuthManager.shared.currentUserEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let isSameOrUnclaimedOwner = localEmail.isEmpty || (!authEmail.isEmpty && localEmail == authEmail)
+
+        if let activeLocalUserId, activeLocalUserId != userId, !isSameOrUnclaimedOwner {
             clearAllPendingDeletions()
             FormaDataStore.shared.resetLocalDataForUserSwitch(
                 userName: AuthManager.shared.currentUserName,
@@ -135,7 +140,7 @@ public final class BackendSyncManager: ObservableObject {
             )
             UserDefaults.standard.set(userId, forKey: Self.activeLocalUserIdKey)
             markRequiresInitialPull(true)
-        } else if activeLocalUserId == nil {
+        } else if activeLocalUserId != userId {
             UserDefaults.standard.set(userId, forKey: Self.activeLocalUserIdKey)
         }
         
@@ -146,9 +151,9 @@ public final class BackendSyncManager: ObservableObject {
         do {
             let needsInitialPull = UserDefaults.standard.bool(forKey: requiresInitialPullKey)
             if needsInitialPull {
-                // Em novo login / troca de conta: SEMPRE faz PULL primeiro para restaurar os dados da conta na nuvem
-                // sem sobrescrever o perfil salvo com valores padrão nem vazar dados antigos.
+                // Em novo login / troca de conta: faz PULL primeiro e em seguida PUSH para migrar eventuais registros locais
                 try await pullRemoteData(context: context, token: token, userId: userId)
+                try await pushLocalData(context: context, token: token)
                 markRequiresInitialPull(false)
             } else {
                 // 1. PUSH: Envia dados locais do usuário atual para o Backend / Supabase

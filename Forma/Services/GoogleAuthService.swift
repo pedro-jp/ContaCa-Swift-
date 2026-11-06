@@ -151,37 +151,41 @@ public final class GoogleAuthService: NSObject, ASWebAuthenticationPresentationC
             let session = ASWebAuthenticationSession(
                 url: authUrl,
                 callbackURLScheme: redirectScheme
-            ) { [weak self] callbackURL, error in
-                self?.authSession = nil
-                
-                if let error = error {
-                    let nsErr = error as NSError
-                    if nsErr.domain == ASWebAuthenticationSessionErrorDomain,
-                       nsErr.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
-                        continuation.resume(throwing: CancellationError())
-                    } else {
-                        continuation.resume(throwing: error)
+            ) { callbackURL, error in
+                Task { @MainActor in
+                    GoogleAuthService.shared.authSession = nil
+                    // Aguarda o encerramento da animação do sheet do Safari para evitar travamento de transição no SwiftUI
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+
+                    if let error = error {
+                        let nsErr = error as NSError
+                        if nsErr.domain == ASWebAuthenticationSessionErrorDomain,
+                           nsErr.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(throwing: error)
+                        }
+                        return
                     }
-                    return
+
+                    guard let callbackURL = callbackURL else {
+                        continuation.resume(throwing: NSError(domain: "GoogleAuth", code: 500, userInfo: [NSLocalizedDescriptionKey: "Nenhum retorno recebido do Google."]))
+                        return
+                    }
+
+                    let params = Self.parseCallbackParams(url: callbackURL)
+                    if let error = params["error"] {
+                        continuation.resume(throwing: NSError(domain: "GoogleAuth", code: 400, userInfo: [NSLocalizedDescriptionKey: "Erro de autorização do Google: \(error)"]))
+                        return
+                    }
+
+                    guard let code = params["code"], !code.isEmpty else {
+                        continuation.resume(throwing: NSError(domain: "GoogleAuth", code: 400, userInfo: [NSLocalizedDescriptionKey: "Código de autorização não recebido do Google."]))
+                        return
+                    }
+
+                    continuation.resume(returning: code)
                 }
-                
-                guard let callbackURL = callbackURL else {
-                    continuation.resume(throwing: NSError(domain: "GoogleAuth", code: 500, userInfo: [NSLocalizedDescriptionKey: "Nenhum retorno recebido do Google."]))
-                    return
-                }
-                
-                let params = Self.parseCallbackParams(url: callbackURL)
-                if let error = params["error"] {
-                    continuation.resume(throwing: NSError(domain: "GoogleAuth", code: 400, userInfo: [NSLocalizedDescriptionKey: "Erro de autorização do Google: \(error)"]))
-                    return
-                }
-                
-                guard let code = params["code"], !code.isEmpty else {
-                    continuation.resume(throwing: NSError(domain: "GoogleAuth", code: 400, userInfo: [NSLocalizedDescriptionKey: "Código de autorização não recebido do Google."]))
-                    return
-                }
-                
-                continuation.resume(returning: code)
             }
             
             session.presentationContextProvider = self
