@@ -37,26 +37,19 @@ public final class AuthManager: ObservableObject {
     private static let lastWorkingServerUrlKey = "forma_last_working_server_url"
     private static let boundServerOriginKey = "forma_bound_server_origin"
 
+    public static let productionRenderUrl = "https://forma-94vp.onrender.com"
+
     public static var isConfiguredRemoteHttps: Bool {
-        guard let url = configuredPlistUrl?.lowercased() else { return false }
-        return url.hasPrefix("https://")
+        let active = (configuredPlistUrl ?? productionRenderUrl).lowercased()
+        return active.hasPrefix("https://")
     }
 
-    #if targetEnvironment(simulator)
-    public static var defaultServerUrl: String { configuredPlistUrl ?? "http://localhost:8085" }
-    #else
     public static var defaultServerUrl: String {
         if let plistUrl = configuredPlistUrl, !plistUrl.isEmpty {
             return plistUrl
         }
-        if let saved = UserDefaults.standard.string(forKey: lastWorkingServerUrlKey),
-           !saved.isEmpty,
-           !deprecatedSubnetHosts.contains(saved) {
-            return saved
-        }
-        return "http://MacBook-Pro-de-Joao-2.local:8085"
+        return productionRenderUrl
     }
-    #endif
     public static let fallbackBonjourUrl = "http://MacBook-Pro-de-Joao-2.local:8085"
     public static let fallbackCurrentLanUrl = "http://10.0.0.106:8085"
     public static let fallbackSecondaryLanUrl = "http://192.168.1.23:8085"
@@ -83,8 +76,8 @@ public final class AuthManager: ObservableObject {
     public var candidateServerUrls: [String] {
         // Quando apontado para servidor HTTPS em nuvem (ex: Render), usa exclusivamente a URL de produção
         // sem tentar IPs locais nem reduzir o timeout em cold-starts.
-        if Self.isConfiguredRemoteHttps, let prodUrl = Self.configuredPlistUrl {
-            return [prodUrl]
+        if Self.isConfiguredRemoteHttps {
+            return [Self.defaultServerUrl]
         }
 
         var list: [String] = []

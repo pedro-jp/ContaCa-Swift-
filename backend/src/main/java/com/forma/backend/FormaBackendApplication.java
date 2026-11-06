@@ -31,7 +31,12 @@ public class FormaBackendApplication {
     }
 
     private static void loadDotEnv() {
-        File[] candidates = { new File(".env"), new File("../.env"), new File("backend/.env") };
+        File[] candidates = {
+            new File(".env"),
+            new File("../.env"),
+            new File("backend/.env"),
+            new File("/etc/secrets/.env")
+        };
         for (File f : candidates) {
             if (f.exists() && f.isFile()) {
                 try {
@@ -124,16 +129,24 @@ public class FormaBackendApplication {
         }
 
         if (projectRef != null && !projectRef.isBlank()) {
+            String directUrl = "jdbc:postgresql://db." + projectRef + ".supabase.co:5432/postgres?sslmode=require&prepareThreshold=0";
+            if (seenUrls.add(directUrl + "|postgres")) {
+                candidates.add(new JdbcCandidate(directUrl, "postgres", "Host direto db." + projectRef));
+            }
+
             String poolerUser = "postgres." + projectRef;
             String[] poolerRegions = {
                 "aws-0-sa-east-1",
                 "aws-1-sa-east-1",
                 "aws-0-us-east-1",
                 "aws-1-us-east-1",
+                "aws-0-us-east-2",
+                "aws-1-us-east-2",
                 "aws-0-us-west-1",
                 "aws-0-us-west-2",
                 "aws-0-eu-central-1",
-                "aws-0-eu-west-1"
+                "aws-0-eu-west-1",
+                "aws-0-eu-west-2"
             };
             for (String region : poolerRegions) {
                 String url = "jdbc:postgresql://" + region + ".pooler.supabase.com:5432/postgres?sslmode=require&prepareThreshold=0";
@@ -141,11 +154,6 @@ public class FormaBackendApplication {
                 if (seenUrls.add(key)) {
                     candidates.add(new JdbcCandidate(url, poolerUser, "Pooler " + region));
                 }
-            }
-
-            String directUrl = "jdbc:postgresql://db." + projectRef + ".supabase.co:5432/postgres?sslmode=require&prepareThreshold=0";
-            if (seenUrls.add(directUrl + "|postgres")) {
-                candidates.add(new JdbcCandidate(directUrl, "postgres", "Host direto db." + projectRef));
             }
         }
 

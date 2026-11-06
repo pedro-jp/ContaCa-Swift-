@@ -7,7 +7,7 @@ server:
 
 spring:
   config:
-    import: optional:file:.env[.properties],optional:file:backend/.env[.properties]
+    import: optional:file:.env[.properties],optional:file:backend/.env[.properties],optional:file:/etc/secrets/.env[.properties]
   servlet:
     multipart:
       max-file-size: 15MB

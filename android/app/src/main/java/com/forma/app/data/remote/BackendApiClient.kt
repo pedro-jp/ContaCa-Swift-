@@ -18,8 +18,8 @@ import java.util.concurrent.TimeUnit
 class BackendApiClient(private val context: Context) {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private val gson = Gson()
@@ -31,11 +31,18 @@ class BackendApiClient(private val context: Context) {
 
     private val defaultBaseUrl: String by lazy {
         runCatching { context.getString(R.string.backend_base_url).trimEnd('/') }
-            .getOrDefault("http://10.0.2.2:8085")
+            .getOrDefault("https://forma-94vp.onrender.com")
     }
 
     var baseUrl: String
-        get() = prefs.getString("server_base_url", defaultBaseUrl) ?: defaultBaseUrl
+        get() {
+            val saved = prefs.getString("server_base_url", null)?.trimEnd('/')
+            if (saved.isNullOrBlank()) return defaultBaseUrl
+            if (defaultBaseUrl.startsWith("https://") && saved.startsWith("http://")) {
+                return defaultBaseUrl
+            }
+            return saved
+        }
         set(value) = prefs.edit().putString("server_base_url", value.trimEnd('/')).apply()
 
     var jwtToken: String?
