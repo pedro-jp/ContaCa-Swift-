@@ -101,6 +101,16 @@ public class FormaBackendApplication {
         String supabaseUrl = getEnvOrProperty("SUPABASE_URL");
         String projectRef = extractProjectRef(supabaseUrl);
 
+        if ((dbPassword == null || dbPassword.isBlank()) && configuredUrl != null && configuredUrl.contains("password=")) {
+            for (String param : configuredUrl.substring(configuredUrl.indexOf('?') + 1).split("&")) {
+                if (param.startsWith("password=")) {
+                    dbPassword = param.substring("password=".length());
+                } else if (param.startsWith("user=") && (configuredUser == null || configuredUser.isBlank())) {
+                    configuredUser = param.substring("user=".length());
+                }
+            }
+        }
+
         if (dbPassword == null || dbPassword.isBlank()) {
             log.info("[Database] SUPABASE_DB_PASSWORD não configurado. Usando banco local H2 (./forma_local_db).");
             activateH2Fallback();
