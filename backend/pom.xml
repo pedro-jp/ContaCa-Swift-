@@ -11,8 +11,8 @@
         <relativePath/>
     </parent>
     
-    <groupId>com.contaca</groupId>
-    <artifactId>contaca-backend</artifactId>
+    <groupId>com.forma</groupId>
+    <artifactId>forma-backend</artifactId>
     <version>1.0.0</version>
     <name>Forma Backend &amp; Admin Panel</name>
     <description>Backend para sincronização Supabase, autenticação e proxy de IA do Forma</description>

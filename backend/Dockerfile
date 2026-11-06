@@ -21,7 +21,7 @@ WORKDIR /app
 # Executa como usuário sem privilégios de root
 RUN addgroup -S forma && adduser -S forma -G forma
 
-COPY --from=build /workspace/target/contaca-backend-*.jar /app/app.jar
+COPY --from=build /workspace/target/forma-backend-*.jar /app/app.jar
 RUN chown -R forma:forma /app
 
 USER forma

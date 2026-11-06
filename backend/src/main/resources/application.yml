@@ -11,9 +11,9 @@ spring:
       max-file-size: 15MB
       max-request-size: 15MB
   application:
-    name: contaca-backend
+    name: forma-backend
   datasource:
-    url: ${SUPABASE_DB_URL:jdbc:h2:file:./contaca_local_db;DB_CLOSE_DELAY=-1}
+    url: ${SUPABASE_DB_URL:jdbc:h2:file:./forma_local_db;DB_CLOSE_DELAY=-1}
     username: ${SUPABASE_DB_USER:sa}
     password: ${SUPABASE_DB_PASSWORD:}
     driver-class-name: ${SUPABASE_DB_DRIVER:org.h2.Driver}
@@ -33,7 +33,7 @@ spring:
 
 app:
   jwt:
-    secret: ${JWT_SECRET:ContaCaSuperSecretJwtKey2026WithMinimum256BitsLengthForHmacSha256Security!}
+    secret: ${JWT_SECRET:FormaSuperSecretJwtKey2026WithMinimum256BitsLengthForHmacSha256Security!}
     expiration-ms: 2592000000 # 30 dias em milissegundos
   admin:
     username: ${ADMIN_USERNAME:admin}

@@ -1,4 +1,4 @@
-// ContaCa Admin Panel Client Logic (Cookie & JWT Auth)
+// Forma Admin Panel Client Logic (Cookie & JWT Auth)
 const API_BASE = '/api/admin';
 
 // Elementos da DOM - Auth
@@ -78,7 +78,7 @@ async function handleLogin(e) {
         const resp = await fetch(`${API_BASE}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'include', // Salva e envia o cookie HttpOnly contaca_admin_token
+            credentials: 'include', // Salva e envia o cookie HttpOnly forma_admin_token
             body: JSON.stringify({ username, password })
         });
 

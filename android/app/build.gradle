@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace 'com.contaca.app'
+    namespace 'com.forma.app'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.contaca.app"
+        applicationId "com.forma.app"
         minSdk 26
         targetSdk 34
         versionCode 1

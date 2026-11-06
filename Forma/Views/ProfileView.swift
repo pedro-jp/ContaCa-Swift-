@@ -1,0 +1,529 @@
+//
+//  ProfileView.swift
+//  Forma
+//
+//  Aba Perfil & Ajustes Fisiológicos do Forma com validação flexível, recálculo contextual e gestão de conta.
+//
+
+import SwiftUI
+import SwiftData
+
+struct ProfileView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query private var profiles: [Profile]
+    @Query(sort: \WeightEntry.date, order: .reverse) private var weightEntries: [WeightEntry]
+
+    @FocusState private var isHeightFocused: Bool
+    @FocusState private var isWeightFocused: Bool
+    @State private var weightInputText: String = ""
+    @State private var heightInputText: String = ""
+    @State private var savedToastMessage: String? = nil
+    @State private var isLoggingOut: Bool = false
+    @State private var isDeletingAccount: Bool = false
+    @State private var showDeleteAccountAlert: Bool = false
+    @State private var deleteErrorMessage: String? = nil
+    @State private var showLegalPrivacySheet: Bool = false
+    @State private var showChangePasswordSheet: Bool = false
+
+    @ObservedObject private var authManager = AuthManager.shared
+    @ObservedObject private var syncManager = BackendSyncManager.shared
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let toast = savedToastMessage {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.white)
+                        Text(toast)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(FormaTheme.Colors.energyGreen)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                ScrollView {
+                    if let profile = profiles.first {
+                        @Bindable var bindableProfile = profile
+                        let fullCtx = FormaDataStore.shared.buildRecalculationContext(in: modelContext)
+                        let contextualMetrics = bindableProfile.contextualMetrics(context: fullCtx)
+
+                        VStack(alignment: .leading, spacing: FormaTheme.Spacing.sectionGap) {
+                            profileHeaderCard(profile: bindableProfile)
+                            fitnessGoalCard(profile: bindableProfile)
+
+                            ProfileTargetWeightCard(
+                                profile: bindableProfile,
+                                onAdjustCurrentWeight: { val, syncText, record in
+                                    applyWeightChange(val, profile: bindableProfile, syncText: syncText, recordEntry: record)
+                                },
+                                onFinishWeightSlider: {
+                                    syncTodayWeightEntry(weight: bindableProfile.currentWeight)
+                                    try? modelContext.save()
+                                    FormaDataStore.shared.syncTodayData()
+                                },
+                                onFinishTargetSlider: {
+                                    recalculateIfNeededAndSave(profile: bindableProfile)
+                                },
+                                onFocusWeightField: {
+                                    isWeightFocused = true
+                                }
+                            )
+
+                            ProfileBiometricsCard(
+                                profile: bindableProfile,
+                                heightInputText: $heightInputText,
+                                weightInputText: $weightInputText,
+                                isHeightFocused: $isHeightFocused,
+                                isWeightFocused: $isWeightFocused,
+                                contextualTdee: contextualMetrics.contextualTdee,
+                                onApplyHeight: { parsed, syncText in
+                                    applyHeightChange(parsed, profile: bindableProfile, syncText: syncText)
+                                },
+                                onApplyWeight: { parsed, syncText, record in
+                                    applyWeightChange(parsed, profile: bindableProfile, syncText: syncText, recordEntry: record)
+                                },
+                                onRecalculateTap: {
+                                    FormaDataStore.shared.recalculateProfileWithFullContext(profile: bindableProfile, in: modelContext)
+                                    try? modelContext.save()
+                                    FormaDataStore.shared.syncTodayData()
+                                    showToast("Metas recalculadas pela Inteligência Forma!")
+                                }
+                            )
+
+                            ProfileDailyGoalsCard(
+                                profile: bindableProfile,
+                                onContextSliderEnded: {
+                                    recalculateIfNeededAndSave(profile: bindableProfile)
+                                }
+                            )
+
+                            ProfileMacroGoalsCard(
+                                profile: bindableProfile,
+                                onSuggestTap: {
+                                    suggestOptimalMacros(profile: bindableProfile)
+                                    showToast("Proporção ideal de macronutrientes aplicada!")
+                                }
+                            )
+
+                            accountCard
+                            saveSettingsButton(profile: bindableProfile)
+                        }
+                        .padding(.horizontal, FormaTheme.Spacing.screenHorizontal)
+                        .padding(.top, 14)
+                        .onAppear { syncInputStrings(from: profile) }
+                        .onChange(of: profile.currentWeight) { _, newWeight in
+                            if !isWeightFocused {
+                                weightInputText = String(format: "%.1f", newWeight)
+                            }
+                        }
+                        .onChange(of: profile.height) { _, newHeight in
+                            if !isHeightFocused {
+                                heightInputText = String(format: "%.2f", newHeight)
+                            }
+                        }
+                    } else {
+                        ProgressView()
+                            .padding(.top, 60)
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .dismissKeyboardOnTap()
+                .withDoneKeyboardToolbar()
+            }
+            .background(FormaTheme.Colors.pageBackground.ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showLegalPrivacySheet) {
+                LegalPrivacySheet()
+            }
+            .sheet(isPresented: $showChangePasswordSheet) {
+                ChangePasswordSheet {
+                    showToast("Senha alterada com sucesso!")
+                }
+            }
+            .alert("Excluir conta permanentemente?", isPresented: $showDeleteAccountAlert) {
+                Button("Cancelar", role: .cancel) {}
+                Button("Excluir Minha Conta", role: .destructive) {
+                    performPermanentAccountDeletion()
+                }
+            } message: {
+                Text("Esta ação não pode ser desfeita. Seu cadastro, refeições, treinos, fichas, pesagens e registros de água serão apagados definitivamente do Forma e da nuvem.")
+            }
+            .task {
+                let active = FormaDataStore.shared.ensureSingleProfile(in: modelContext)
+                syncInputStrings(from: active)
+            }
+        }
+    }
+
+    private func profileHeaderCard(@Bindable profile: Profile) -> some View {
+        FormaCard(padding: 18) {
+            HStack(spacing: 16) {
+                Image("profile")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 60, height: 60)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(Color.primary.opacity(0.08), lineWidth: 1.5))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    TextField("Seu Nome", text: $profile.nome)
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(FormaTheme.Colors.primaryText)
+
+                    Text(profile.email.isEmpty ? (authManager.currentUserEmail ?? "Conta Forma") : profile.email)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func fitnessGoalCard(@Bindable profile: Profile) -> some View {
+        FormaCard(padding: 20) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Image(systemName: "target")
+                        .foregroundStyle(FormaTheme.Colors.brand)
+                    Text("Objetivo Corporal")
+                        .font(.headline)
+                        .foregroundStyle(FormaTheme.Colors.primaryText)
+                }
+
+                Picker("Objetivo", selection: $profile.goal) {
+                    ForEach(FitnessGoal.allCases) { goal in
+                        Text(goal.rawValue).tag(goal)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: profile.goal) { _, _ in
+                    recalculateIfNeededAndSave(profile: profile)
+                }
+
+                Text(profile.goal.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider().background(Color.primary.opacity(0.06))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Foco na Tela Inicial")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(FormaTheme.Colors.primaryText)
+
+                    Picker("Foco", selection: Binding(
+                        get: { profile.effectiveFocus },
+                        set: { profile.preferredFocus = $0 }
+                    )) {
+                        ForEach(FocusMetric.allCases) { focus in
+                            Text(focus.rawValue).tag(focus)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if profile.goal == .gain {
+                        Text("Recomendamos manter o foco em **Consumidas** para bater sua meta diária de ganho.")
+                            .font(.caption)
+                            .foregroundStyle(FormaTheme.Colors.brand)
+                    }
+                }
+            }
+        }
+    }
+
+    private var accountCard: some View {
+        FormaCard(padding: 20) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Image(systemName: "person.crop.circle.fill")
+                        .foregroundStyle(FormaTheme.Colors.brand)
+                    Text("Conta")
+                        .font(.headline)
+                        .foregroundStyle(FormaTheme.Colors.primaryText)
+                    Spacer()
+                    if authManager.isAuthenticated {
+                        FormaBadge(text: "Ativa", tint: FormaTheme.Colors.energyGreen)
+                    }
+                }
+
+                HStack(spacing: 14) {
+                    Circle()
+                        .fill(FormaTheme.Colors.brandSoft)
+                        .frame(width: 48, height: 48)
+                        .overlay(
+                            Image(systemName: authManager.currentAuthProvider == "APPLE" ? "applelogo" : (authManager.currentAuthProvider == "GOOGLE" ? "g.circle.fill" : "person.fill"))
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(FormaTheme.Colors.brand)
+                        )
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(authManager.currentUserName ?? "Usuário Forma")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(FormaTheme.Colors.primaryText)
+
+                        if let email = authManager.currentUserEmail, !email.isEmpty {
+                            Text(email)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+
+                Divider().padding(.vertical, 2)
+
+                Button {
+                    showLegalPrivacySheet = true
+                } label: {
+                    HStack {
+                        Image(systemName: "hand.raised.shield.fill")
+                            .foregroundStyle(FormaTheme.Colors.brand)
+                        Text("Privacidade, Saúde & Termos de Uso")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(FormaTheme.Colors.primaryText)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+
+                if (authManager.currentAuthProvider ?? "EMAIL") == "EMAIL" {
+                    Button {
+                        showChangePasswordSheet = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "key.fill")
+                                .foregroundStyle(FormaTheme.Colors.brand)
+                            Text("Alterar Senha")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(FormaTheme.Colors.primaryText)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if let deleteErrorMessage {
+                    FormaBanner(message: deleteErrorMessage, style: .error)
+                }
+
+                Divider().padding(.vertical, 2)
+
+                Button(role: .destructive) {
+                    guard !isLoggingOut && !isDeletingAccount else { return }
+                    isLoggingOut = true
+                    Task { @MainActor in
+                        if authManager.isAuthenticated {
+                            syncManager.cancelPendingSyncs()
+                            await syncManager.sync(context: modelContext)
+                        }
+                        isLoggingOut = false
+                        authManager.logout()
+                    }
+                } label: {
+                    HStack {
+                        if isLoggingOut {
+                            ProgressView().tint(FormaTheme.Colors.danger)
+                            Text("Sincronizando e saindo...")
+                        } else {
+                            Image(systemName: "rectangle.portrait.and.arrow.right")
+                            Text("Sair da Conta")
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(FormaTheme.Colors.danger)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(FormaTheme.Colors.danger.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .disabled(isLoggingOut || isDeletingAccount)
+
+                Button(role: .destructive) {
+                    showDeleteAccountAlert = true
+                } label: {
+                    HStack(spacing: 6) {
+                        if isDeletingAccount {
+                            ProgressView().tint(FormaTheme.Colors.danger)
+                            Text("Excluindo conta...")
+                        } else {
+                            Image(systemName: "trash")
+                            Text("Excluir Minha Conta")
+                        }
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FormaTheme.Colors.danger.opacity(0.85))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                }
+                .disabled(isLoggingOut || isDeletingAccount)
+            }
+        }
+    }
+
+    private func performPermanentAccountDeletion() {
+        guard !isDeletingAccount else { return }
+        deleteErrorMessage = nil
+        isDeletingAccount = true
+        Task { @MainActor in
+            do {
+                try await authManager.deleteAccount()
+                isDeletingAccount = false
+            } catch {
+                deleteErrorMessage = error.localizedDescription
+                isDeletingAccount = false
+            }
+        }
+    }
+
+    private func saveSettingsButton(profile: Profile) -> some View {
+        Button {
+            if let parsedH = ProfileInputValidator.parseFlexibleHeight(heightInputText) {
+                applyHeightChange(parsedH, profile: profile, syncText: true)
+            }
+            if let parsedW = ProfileInputValidator.parseFlexibleWeight(weightInputText) {
+                applyWeightChange(parsedW, profile: profile, syncText: true, recordEntry: true)
+            } else {
+                syncTodayWeightEntry(weight: profile.currentWeight)
+            }
+
+            isHeightFocused = false
+            isWeightFocused = false
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+
+            try? modelContext.save()
+            FormaDataStore.shared.syncTodayData()
+            Task {
+                await syncManager.sync(context: modelContext)
+            }
+            showToast("Configurações salvas e sincronizadas!")
+        } label: {
+            HStack {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 14, weight: .bold))
+                Text("Salvar Configurações")
+                    .font(.headline)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(FormaTheme.Colors.brand)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 4)
+        .padding(.bottom, 32)
+    }
+
+    // MARK: - Helpers
+
+    private func showToast(_ text: String) {
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        withAnimation(.spring(duration: 0.3)) {
+            savedToastMessage = text
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            withAnimation {
+                savedToastMessage = nil
+            }
+        }
+    }
+
+    private func syncInputStrings(from profile: Profile) {
+        if !isWeightFocused {
+            weightInputText = String(format: "%.1f", profile.currentWeight)
+        }
+        if !isHeightFocused {
+            heightInputText = String(format: "%.2f", profile.height)
+        }
+    }
+
+    private func recalculateIfNeededAndSave(profile: Profile) {
+        profile.autoRecalculateGoals = true
+        FormaDataStore.shared.recalculateProfileWithFullContext(profile: profile, in: modelContext)
+        try? modelContext.save()
+        FormaDataStore.shared.syncTodayData()
+    }
+
+    private func applyWeightChange(_ newWeight: Double, profile: Profile, syncText: Bool, recordEntry: Bool) {
+        let clamped = max(30.0, min(300.0, (newWeight * 10.0).rounded() / 10.0))
+        profile.currentWeight = clamped
+        profile.autoRecalculateGoals = true
+        if syncText {
+            weightInputText = String(format: "%.1f", clamped)
+        }
+        if recordEntry {
+            syncTodayWeightEntry(weight: clamped)
+        }
+        FormaDataStore.shared.recalculateProfileWithFullContext(for: clamped, profile: profile, in: modelContext)
+        try? modelContext.save()
+        FormaDataStore.shared.syncTodayData()
+    }
+
+    private func applyHeightChange(_ newHeight: Double, profile: Profile, syncText: Bool) {
+        let clamped = max(1.0, min(2.5, (newHeight * 100.0).rounded() / 100.0))
+        profile.height = clamped
+        profile.autoRecalculateGoals = true
+        if syncText {
+            heightInputText = String(format: "%.2f", clamped)
+        }
+        FormaDataStore.shared.recalculateProfileWithFullContext(profile: profile, in: modelContext)
+        try? modelContext.save()
+        FormaDataStore.shared.syncTodayData()
+    }
+
+    private func syncTodayWeightEntry(weight: Double) {
+        let calendar = Calendar.current
+        if let todayEntry = weightEntries.first(where: { calendar.isDateInToday($0.date) }) {
+            if abs(todayEntry.weight - weight) >= 0.05 {
+                todayEntry.weight = weight
+            }
+        } else {
+            let latestWeight = weightEntries.first?.weight
+            if latestWeight == nil || abs((latestWeight ?? 0) - weight) >= 0.05 {
+                let entry = WeightEntry(weight: weight, date: Date(), notes: "Atualizado nos ajustes")
+                modelContext.insert(entry)
+                AppActivityLogManager.shared.logWeight(id: entry.id.uuidString, weightKg: weight, date: entry.date, notes: entry.notes)
+            }
+        }
+    }
+
+    private func suggestOptimalMacros(profile: Profile) {
+        let ctx = FormaDataStore.shared.buildRecalculationContext(in: modelContext)
+        let metrics = profile.contextualMetrics(context: ctx)
+        let activeCalories = profile.targetCalorieIntake > 0 ? profile.targetCalorieIntake : metrics.suggestedCalories
+        let protein = metrics.proteinGrams
+        let fat = metrics.fatGrams
+        let minCarbs: Double
+        switch profile.goal {
+        case .gain: minCarbs = 120.0
+        case .lose: minCarbs = 60.0
+        case .maintain: minCarbs = 80.0
+        }
+        let remainingCalories = max(0.0, activeCalories - (protein * 4.0) - (fat * 9.0))
+        let carbs = max(minCarbs, (remainingCalories / 4.0).rounded())
+        profile.macros = Macros(protein: protein, fat: fat, carbohydrates: carbs)
+
+        try? modelContext.save()
+        FormaDataStore.shared.syncTodayData()
+    }
+}
+
+#Preview {
+    ProfileView()
+        .modelContainer(PreviewContainer.shared)
+}

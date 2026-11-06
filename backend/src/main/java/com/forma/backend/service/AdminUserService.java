@@ -1,0 +1,338 @@
+package com.forma.backend.service;
+
+import com.forma.backend.dto.AdminDto;
+import com.forma.backend.dto.SyncDto;
+import com.forma.backend.entity.User;
+import com.forma.backend.entity.UserProfile;
+import com.forma.backend.exception.DomainExceptions.ResourceNotFoundException;
+import com.forma.backend.repository.*;
+import com.forma.backend.websocket.AdminEventPublisherService;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
+
+@Service
+public class AdminUserService {
+
+    private final UserRepository userRepository;
+    private final UserProfileRepository userProfileRepository;
+    private final FoodEntryRepository foodEntryRepository;
+    private final WorkoutEntryRepository workoutEntryRepository;
+    private final WaterEntryRepository waterEntryRepository;
+    private final WeightEntryRepository weightEntryRepository;
+    private final WorkoutRoutineRepository workoutRoutineRepository;
+    private final AiAnalysisRepository aiAnalysisRepository;
+    private final UserActivityLogRepository userActivityLogRepository;
+    private final AiRequestLogRepository aiRequestLogRepository;
+    private final AuthService authService;
+    private final AdminEventPublisherService adminEventPublisherService;
+
+    public AdminUserService(
+        UserRepository userRepository,
+        UserProfileRepository userProfileRepository,
+        FoodEntryRepository foodEntryRepository,
+        WorkoutEntryRepository workoutEntryRepository,
+        WaterEntryRepository waterEntryRepository,
+        WeightEntryRepository weightEntryRepository,
+        WorkoutRoutineRepository workoutRoutineRepository,
+        AiAnalysisRepository aiAnalysisRepository,
+        UserActivityLogRepository userActivityLogRepository,
+        AiRequestLogRepository aiRequestLogRepository,
+        AuthService authService,
+        AdminEventPublisherService adminEventPublisherService
+    ) {
+        this.userRepository = userRepository;
+        this.userProfileRepository = userProfileRepository;
+        this.foodEntryRepository = foodEntryRepository;
+        this.workoutEntryRepository = workoutEntryRepository;
+        this.waterEntryRepository = waterEntryRepository;
+        this.weightEntryRepository = weightEntryRepository;
+        this.workoutRoutineRepository = workoutRoutineRepository;
+        this.aiAnalysisRepository = aiAnalysisRepository;
+        this.userActivityLogRepository = userActivityLogRepository;
+        this.aiRequestLogRepository = aiRequestLogRepository;
+        this.authService = authService;
+        this.adminEventPublisherService = adminEventPublisherService;
+    }
+
+    @Transactional(readOnly = true)
+    public List<AdminDto.UserSummaryDto> listAllUsers() {
+        Instant startOfDay = currentStartOfDay();
+        return userRepository.findAll().stream()
+            .sorted(Comparator.comparing(
+                (User u) -> u.getCreatedAt() != null ? u.getCreatedAt() : Instant.EPOCH
+            ).reversed())
+            .map(u -> toSummary(u, startOfDay))
+            .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public AdminDto.UserDetailDto getUserDetail(UUID userId) {
+        User user = findUserOrThrow(userId);
+        Instant startOfDay = currentStartOfDay();
+
+        UserProfile profile = userProfileRepository.findById(userId)
+            .orElseGet(() -> new UserProfile(userId));
+
+        List<SyncDto.FoodDto> recentFoods = foodEntryRepository.findByUserIdOrderByConsumedAtDesc(userId).stream()
+            .limit(15)
+            .map(SyncDto.FoodDto::fromEntity)
+            .toList();
+
+        List<SyncDto.WorkoutDto> recentWorkouts = workoutEntryRepository.findByUserIdOrderByWorkoutDateDesc(userId).stream()
+            .limit(15)
+            .map(SyncDto.WorkoutDto::fromEntity)
+            .toList();
+
+        List<AdminDto.AiLogSummaryDto> recentAiLogs = aiRequestLogRepository.findTop15ByUserIdOrderByCreatedAtDesc(userId).stream()
+            .map(AdminDto.AiLogSummaryDto::fromEntity)
+            .toList();
+
+        return new AdminDto.UserDetailDto(
+            toSummary(user, startOfDay),
+            SyncDto.ProfileDto.fromEntity(profile),
+            recentFoods,
+            recentWorkouts,
+            recentAiLogs
+        );
+    }
+
+    @Transactional
+    public AdminDto.UserSummaryDto createUser(AdminDto.CreateUserRequest req) {
+        if (req == null || req.email() == null || req.email().isBlank()) {
+            throw new IllegalArgumentException("Informe um e-mail válido.");
+        }
+        String email = req.email().trim().toLowerCase();
+        if (userRepository.existsByEmail(email)) {
+            throw new IllegalArgumentException("Já existe um usuário com este e-mail.");
+        }
+        if (req.password() == null || req.password().length() < 4) {
+            throw new IllegalArgumentException("Informe uma senha com pelo menos 4 caracteres.");
+        }
+
+        User user = new User();
+        user.setEmail(email);
+        user.setName(req.name() != null && !req.name().isBlank() ? req.name().trim() : "Atleta");
+        user.setPasswordHash(authService.hashPassword(req.password()));
+        user.setAuthProvider("EMAIL");
+        user.setStatus("ACTIVE");
+        user.setAiBlocked(false);
+        if (req.dailyAiLimit() != null && req.dailyAiLimit() > 0) {
+            user.setDailyAiLimit(req.dailyAiLimit());
+        }
+        user.setCreatedAt(Instant.now());
+
+        User saved = userRepository.save(user);
+        userProfileRepository.save(new UserProfile(saved.getId()));
+
+        broadcastState("ADMIN_USER_CREATED", saved);
+        return toSummary(saved, currentStartOfDay());
+    }
+
+    @Transactional
+    public AdminDto.UserSummaryDto updateUser(UUID userId, AdminDto.UpdateUserRequest req) {
+        User user = findUserOrThrow(userId);
+
+        if (req != null) {
+            if (req.name() != null && !req.name().isBlank()) {
+                user.setName(req.name().trim());
+            }
+            if (req.email() != null && !req.email().isBlank()) {
+                String normalized = req.email().trim().toLowerCase();
+                if (!normalized.equalsIgnoreCase(user.getEmail()) && userRepository.existsByEmail(normalized)) {
+                    throw new IllegalArgumentException("Este e-mail já está em uso por outra conta.");
+                }
+                user.setEmail(normalized);
+            }
+            if (req.newPassword() != null && !req.newPassword().isBlank()) {
+                user.setPasswordHash(authService.hashPassword(req.newPassword().trim()));
+            }
+        }
+        User saved = userRepository.save(user);
+
+        if (req != null) {
+            UserProfile profile = userProfileRepository.findById(userId)
+                .orElseGet(() -> new UserProfile(userId));
+            if (req.goal() != null && !req.goal().isBlank()) profile.setGoal(req.goal());
+            if (req.currentWeight() != null && req.currentWeight() > 0) profile.setCurrentWeight(req.currentWeight());
+            if (req.targetWeight() != null && req.targetWeight() > 0) profile.setTargetWeight(req.targetWeight());
+            if (req.heightMeters() != null && req.heightMeters() > 0) profile.setHeightMeters(req.heightMeters());
+            if (req.targetCalorieIntake() != null && req.targetCalorieIntake() > 0) profile.setTargetCalorieIntake(req.targetCalorieIntake());
+            if (req.targetCalorieBurn() != null && req.targetCalorieBurn() >= 0) profile.setTargetCalorieBurn(req.targetCalorieBurn());
+            if (req.targetWaterMilliliters() != null && req.targetWaterMilliliters() > 0) {
+                profile.setTargetWaterMilliliters(req.targetWaterMilliliters());
+            }
+            profile.setUpdatedAt(Instant.now());
+            userProfileRepository.save(profile);
+        }
+
+        broadcastState("ADMIN_USER_UPDATED", saved);
+        return toSummary(saved, currentStartOfDay());
+    }
+
+    @Transactional
+    public AdminDto.UserSummaryDto updateStatus(UUID userId, AdminDto.UserStatusRequest req) {
+        User user = findUserOrThrow(userId);
+
+        boolean shouldPause = (req != null && req.paused() != null) ? req.paused() : !user.isPaused();
+        user.setStatus(shouldPause ? "PAUSED" : "ACTIVE");
+        user.setPausedReason(
+            shouldPause && req != null && req.reason() != null && !req.reason().isBlank()
+                ? req.reason().trim()
+                : null
+        );
+
+        User saved = userRepository.save(user);
+        broadcastState(shouldPause ? "ADMIN_USER_PAUSED" : "ADMIN_USER_RESUMED", saved);
+        return toSummary(saved, currentStartOfDay());
+    }
+
+    @Transactional
+    public AdminDto.UserSummaryDto updateAiAccess(UUID userId, AdminDto.UserAiAccessRequest req) {
+        User user = findUserOrThrow(userId);
+
+        if (req != null) {
+            if (req.aiBlocked() != null) {
+                user.setAiBlocked(req.aiBlocked());
+            }
+            if (req.dailyAiLimit() != null) {
+                user.setDailyAiLimit(req.dailyAiLimit() > 0 ? req.dailyAiLimit() : null);
+            }
+        }
+
+        User saved = userRepository.save(user);
+        broadcastState("ADMIN_USER_AI_UPDATED", saved);
+        return toSummary(saved, currentStartOfDay());
+    }
+
+    @Transactional
+    public AdminDto.UserSummaryDto resetUserAccount(UUID userId, AdminDto.ResetUserRequest req) {
+        User user = findUserOrThrow(userId);
+
+        boolean clearMealsWorkouts = req == null || req.clearMealsAndWorkouts() == null || req.clearMealsAndWorkouts();
+        boolean clearHydrationWeights = req == null || req.clearHydrationAndWeights() == null || req.clearHydrationAndWeights();
+        boolean clearRoutines = req == null || req.clearRoutines() == null || req.clearRoutines();
+        boolean clearAnalysesLogs = req == null || req.clearAnalysesAndLogs() == null || req.clearAnalysesAndLogs();
+        boolean resetProfile = req == null || req.resetProfileGoals() == null || req.resetProfileGoals();
+
+        if (clearMealsWorkouts) {
+            foodEntryRepository.deleteByUserId(userId);
+            workoutEntryRepository.deleteByUserId(userId);
+        }
+        if (clearHydrationWeights) {
+            waterEntryRepository.deleteByUserId(userId);
+            weightEntryRepository.deleteByUserId(userId);
+        }
+        if (clearRoutines) {
+            workoutRoutineRepository.deleteByUserId(userId);
+        }
+        if (clearAnalysesLogs) {
+            aiAnalysisRepository.deleteByUserId(userId);
+            userActivityLogRepository.deleteByUserId(userId);
+        }
+        if (resetProfile) {
+            UserProfile cleanProfile = new UserProfile(userId);
+            cleanProfile.setUpdatedAt(Instant.now());
+            userProfileRepository.save(cleanProfile);
+        }
+
+        user.setForceResetAt(Instant.now());
+        User saved = userRepository.save(user);
+
+        adminEventPublisherService.publishSyncActivity(
+            "ACCOUNT_RESET",
+            0,
+            foodEntryRepository.count(),
+            workoutEntryRepository.count()
+        );
+        broadcastState("ADMIN_USER_RESET", saved);
+        return toSummary(saved, currentStartOfDay());
+    }
+
+    @Transactional
+    public void deleteUserPermanently(UUID userId) {
+        User user = findUserOrThrow(userId);
+
+        foodEntryRepository.deleteByUserId(userId);
+        workoutEntryRepository.deleteByUserId(userId);
+        waterEntryRepository.deleteByUserId(userId);
+        weightEntryRepository.deleteByUserId(userId);
+        workoutRoutineRepository.deleteByUserId(userId);
+        aiAnalysisRepository.deleteByUserId(userId);
+        userActivityLogRepository.deleteByUserId(userId);
+        aiRequestLogRepository.deleteByUserId(userId);
+        userProfileRepository.deleteById(userId);
+        userRepository.delete(user);
+
+        adminEventPublisherService.publishSyncActivity(
+            "ACCOUNT_DELETED",
+            0,
+            foodEntryRepository.count(),
+            workoutEntryRepository.count()
+        );
+        adminEventPublisherService.publishUserActivity(
+            "ADMIN_USER_DELETED",
+            user.getEmail(),
+            user.getName(),
+            user.getAuthProvider(),
+            userRepository.count()
+        );
+    }
+
+    private User findUserOrThrow(UUID userId) {
+        return userRepository.findById(userId)
+            .orElseThrow(() -> new ResourceNotFoundException("Usuário não encontrado."));
+    }
+
+    private static Instant currentStartOfDay() {
+        return LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant();
+    }
+
+    private void broadcastState(String eventName, User user) {
+        adminEventPublisherService.publishUserActivity(
+            eventName,
+            user.getEmail(),
+            user.getName(),
+            user.getAuthProvider(),
+            userRepository.count()
+        );
+    }
+
+    private AdminDto.UserSummaryDto toSummary(User u, Instant startOfDay) {
+        UUID id = u.getId();
+        UserProfile profile = userProfileRepository.findById(id).orElse(null);
+
+        return new AdminDto.UserSummaryDto(
+            id,
+            u.getEmail(),
+            u.getName(),
+            u.getAuthProvider(),
+            u.getStatus(),
+            u.getPausedReason(),
+            u.isAiBlocked(),
+            u.getDailyAiLimit(),
+            aiRequestLogRepository.countByUserIdAndCreatedAtAfter(id, startOfDay),
+            aiRequestLogRepository.countByUserId(id),
+            foodEntryRepository.countByUserId(id),
+            workoutEntryRepository.countByUserId(id),
+            workoutRoutineRepository.countByUserId(id),
+            waterEntryRepository.countByUserId(id),
+            weightEntryRepository.countByUserId(id),
+            aiAnalysisRepository.countByUserId(id),
+            profile != null ? profile.getGoal() : "Ganhar peso",
+            profile != null ? profile.getCurrentWeight() : 72.0,
+            profile != null ? profile.getTargetWeight() : 80.0,
+            profile != null ? profile.getTargetCalorieIntake() : 2800.0,
+            u.getCreatedAt(),
+            u.getLastLoginAt(),
+            u.getLastSyncedAt(),
+            u.getForceResetAt()
+        );
+    }
+}

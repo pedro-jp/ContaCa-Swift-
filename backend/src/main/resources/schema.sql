@@ -1,5 +1,5 @@
 -- ==============================================================================
--- Schema do Supabase / PostgreSQL para o ContaCa
+-- Schema do Supabase / PostgreSQL para o Forma
 -- Execute este script no SQL Editor do seu projeto Supabase se desejar criar manualmente
 -- ==============================================================================
 
